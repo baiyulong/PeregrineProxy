@@ -5,6 +5,7 @@ use bytes::Bytes;
 use hyper::server::conn::http1;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
 use crate::upstream::direct::DirectConnector;
 use crate::upstream::{ConnectTarget, UpstreamConnector};
 use crate::config::UserCredential;
@@ -213,4 +214,33 @@ pub fn make_407_response() -> Response<Full<Bytes>> {
         .header("Proxy-Authenticate", "Basic realm=\"Peregrine Proxy\"")
         .body(Full::new(Bytes::from("Proxy Authentication Required")))
         .unwrap()
+}
+
+/// Generic HTTP handler that works with any AsyncRead + AsyncWrite + Unpin stream
+pub async fn handle_http_generic<S>(stream: S) 
+where 
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let io = TokioIo::new(stream);
+    
+    let service = hyper::service::service_fn(|req: Request<Incoming>| async move {
+        if req.method() == Method::CONNECT {
+            handle_connect(req).await
+        } else {
+            proxy_request(req).await
+        }
+    });
+    
+    if let Err(e) = http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(io, service)
+        .with_upgrades()  // IMPORTANT: enable upgrades for CONNECT
+        .await
+    {
+        // Don't log "connection closed" as an error
+        if !e.to_string().contains("connection closed") {
+            tracing::error!("HTTP connection error: {}", e);
+        }
+    }
 }
