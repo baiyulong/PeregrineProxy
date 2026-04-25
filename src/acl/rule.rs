@@ -1,4 +1,5 @@
 use ipnet::IpNet;
+use crate::acl::domain_filter::DomainFilter;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AclAction {
@@ -11,6 +12,6 @@ pub enum AclAction {
 pub struct AclRule {
     pub action: AclAction,
     pub src_ip: Option<Vec<IpNet>>,
-    // domain filter will be added in Task 12
+    pub dst_domain: Option<DomainFilter>,
     // http_method filter will be added in Task 21
 }
