@@ -9,18 +9,25 @@ mod upstream;
 
 use clap::Parser;
 use config::{AppConfig, CliArgs};
+use std::process::ExitCode;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
+    // Write to stderr immediately — verifies the binary is executing and is always
+    // visible regardless of stdout pipe buffering (especially on Windows/PowerShell).
+    eprintln!("Peregrine proxy starting...");
+
     let args = CliArgs::parse();
 
     let config = match AppConfig::load_from_file(&args.config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error: failed to load config '{}': {}", args.config, e);
-            std::process::exit(1);
+            return ExitCode::FAILURE;
         }
     };
+
+    eprintln!("Config loaded from: {}", args.config);
 
     // Initialize logging from config (with CLI override)
     let mut log_config = config.logging.clone();
@@ -29,14 +36,13 @@ async fn main() {
     }
     if let Err(e) = logging::init_logging(&log_config) {
         eprintln!("Error: failed to initialize logging: {}", e);
-        std::process::exit(1);
+        return ExitCode::FAILURE;
     }
-
-    tracing::info!("Peregrine proxy starting...");
-    tracing::info!("Loaded config from: {}", args.config);
 
     if let Err(e) = server::run(config, &args.config).await {
-        tracing::error!("Server error: {}", e);
-        std::process::exit(1);
+        eprintln!("Error: {}", e);
+        return ExitCode::FAILURE;
     }
+
+    ExitCode::SUCCESS
 }

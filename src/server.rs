@@ -161,7 +161,7 @@ pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
 
     #[cfg(not(unix))]
     {
-        tracing::info!("Config hot-reload via SIGHUP is only supported on Unix systems");
+        eprintln!("Note: config hot-reload via SIGHUP is only supported on Unix systems");
     }
 
     let mut listener_tasks = Vec::new();
@@ -181,6 +181,7 @@ pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
         } else {
             protocol_name(&protocol).to_string()
         };
+        eprintln!("Listening on {} ({})", listen_cfg.addr, protocol_label);
         tracing::info!("Listening on {} ({})", listen_cfg.addr, protocol_label);
 
         let task = tokio::spawn(async move {
