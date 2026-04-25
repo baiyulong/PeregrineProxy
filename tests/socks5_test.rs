@@ -1,5 +1,6 @@
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::time::Duration;
 
 /// Start a mock TCP echo server
 async fn start_echo_server() -> std::net::SocketAddr {
@@ -42,6 +43,27 @@ async fn start_socks5_proxy_with_auth(users: Option<Vec<peregrine::config::UserC
             tokio::spawn(async move {
                 peregrine::protocol::socks5::handle_socks5(stream, peer_addr, users).await;
             });
+        }
+    });
+    
+    addr
+}
+
+/// Start a mock UDP echo server
+async fn start_udp_echo_server() -> std::net::SocketAddr {
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let addr = socket.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 65535];
+        loop {
+            match socket.recv_from(&mut buf).await {
+                Ok((n, from)) => {
+                    // Echo the data back
+                    let _ = socket.send_to(&buf[..n], from).await;
+                }
+                Err(_) => break,
+            }
         }
     });
     
@@ -204,32 +226,6 @@ async fn test_socks5_unsupported_command_bind() {
     assert_eq!(reply[1], 0x07, "Reply REP should be 0x07 (command not supported)");
 }
 
-#[tokio::test] 
-async fn test_socks5_unsupported_command_udp() {
-    let proxy_addr = start_socks5_proxy().await;
-    
-    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
-    
-    // Method negotiation
-    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
-    let mut resp = [0u8; 2];
-    client.read_exact(&mut resp).await.unwrap();
-    assert_eq!(resp, [0x05, 0x00]);
-    
-    // UDP ASSOCIATE request (unsupported)
-    let udp_req = [
-        0x05, 0x03, 0x00, 0x01, // VER, CMD=UDP_ASSOCIATE, RSV, ATYP=IPv4
-        127, 0, 0, 1, // 127.0.0.1
-        0x00, 0x50, // Port 80
-    ];
-    client.write_all(&udp_req).await.unwrap();
-    
-    let mut reply = [0u8; 10];
-    client.read_exact(&mut reply).await.unwrap();
-    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
-    assert_eq!(reply[1], 0x07, "Reply REP should be 0x07 (command not supported)");
-}
-
 #[tokio::test]
 async fn test_socks5_connection_refused() {
     let proxy_addr = start_socks5_proxy().await;
@@ -367,4 +363,205 @@ async fn test_socks5_no_auth_when_not_configured() {
     let mut reply = [0u8; 10];
     client.read_exact(&mut reply).await.unwrap();
     assert_eq!(reply[1], 0x00);
+}
+
+#[tokio::test]
+async fn test_socks5_udp_associate_basic() {
+    let udp_echo_addr = start_udp_echo_server().await;
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // UDP ASSOCIATE request
+    let udp_req = [
+        0x05, 0x03, 0x00, 0x01, // VER, CMD=UDP_ASSOCIATE, RSV, ATYP=IPv4
+        0x00, 0x00, 0x00, 0x00, // 0.0.0.0 (client doesn't know its address)
+        0x00, 0x00, // Port 0 (client doesn't know its port)
+    ];
+    client.write_all(&udp_req).await.unwrap();
+    
+    // Read reply to get relay address
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x00, "Reply REP should be 0x00 (success)");
+    assert_eq!(reply[3], 0x01, "Reply ATYP should be IPv4");
+    
+    // Extract relay address from reply
+    let relay_ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let relay_port = u16::from_be_bytes([reply[8], reply[9]]);
+    let relay_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(relay_ip, relay_port));
+    
+    // Create UDP client socket
+    let udp_client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    
+    // Prepare SOCKS5 UDP packet
+    // Format: RSV(2) + FRAG(1) + ATYP(1) + DST.ADDR(variable) + DST.PORT(2) + DATA(variable)
+    let test_data = b"Hello UDP!";
+    let target_ip = match udp_echo_addr.ip() {
+        std::net::IpAddr::V4(v4) => v4.octets(),
+        _ => panic!("Expected IPv4"),
+    };
+    let target_port = udp_echo_addr.port().to_be_bytes();
+    
+    let mut socks_packet = vec![
+        0x00, 0x00, // RSV (2 bytes)
+        0x00,       // FRAG (0 = no fragmentation)
+        0x01,       // ATYP (IPv4)
+    ];
+    socks_packet.extend_from_slice(&target_ip);    // DST.ADDR (4 bytes for IPv4)
+    socks_packet.extend_from_slice(&target_port);  // DST.PORT (2 bytes)
+    socks_packet.extend_from_slice(test_data);     // DATA
+    
+    // Send packet through SOCKS5 relay
+    udp_client.send_to(&socks_packet, relay_addr).await.unwrap();
+    
+    // Receive response from relay
+    let mut response_buf = vec![0u8; 1024];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp_client.recv_from(&mut response_buf))
+        .await
+        .unwrap()
+        .unwrap();
+    
+    // Parse response (same SOCKS5 UDP format)
+    assert!(n > 10, "Response too short"); // Must have header + data
+    assert_eq!(&response_buf[0..2], &[0x00, 0x00], "RSV should be 0");
+    assert_eq!(response_buf[2], 0x00, "FRAG should be 0");
+    assert_eq!(response_buf[3], 0x01, "ATYP should be IPv4");
+    
+    // Skip header (RSV + FRAG + ATYP + ADDR + PORT = 2 + 1 + 1 + 4 + 2 = 10 bytes)
+    let response_data = &response_buf[10..n];
+    assert_eq!(response_data, test_data, "Should echo back the data");
+    
+    // Test that TCP control channel closure stops UDP relay
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    
+    // Send another packet - should fail or timeout
+    let result = tokio::time::timeout(
+        Duration::from_millis(500), 
+        udp_client.send_to(&socks_packet, relay_addr)
+    ).await;
+    
+    // The send might succeed but no response should come back
+    if result.is_ok() {
+        let timeout_result = tokio::time::timeout(
+            Duration::from_millis(500),
+            udp_client.recv_from(&mut response_buf)
+        ).await;
+        assert!(timeout_result.is_err(), "Should timeout after TCP control channel is closed");
+    }
+}
+
+#[tokio::test]
+async fn test_socks5_udp_associate_with_auth() {
+    let _udp_echo_addr = start_udp_echo_server().await;
+    let users = vec![peregrine::config::UserCredential {
+        username: "testuser".into(),
+        password: "testpass".into(),
+    }];
+    let proxy_addr = start_socks5_proxy_with_auth(Some(users)).await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation - server requires auth
+    client.write_all(&[0x05, 0x02, 0x00, 0x02]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x02]);
+    
+    // Send credentials
+    let username = b"testuser";
+    let password = b"testpass";
+    let mut auth = vec![0x01];
+    auth.push(username.len() as u8);
+    auth.extend_from_slice(username);
+    auth.push(password.len() as u8);
+    auth.extend_from_slice(password);
+    client.write_all(&auth).await.unwrap();
+    
+    let mut auth_resp = [0u8; 2];
+    client.read_exact(&mut auth_resp).await.unwrap();
+    assert_eq!(auth_resp, [0x01, 0x00]); // Success
+    
+    // UDP ASSOCIATE request
+    let udp_req = [
+        0x05, 0x03, 0x00, 0x01, // VER, CMD=UDP_ASSOCIATE, RSV, ATYP=IPv4
+        0x00, 0x00, 0x00, 0x00, // 0.0.0.0
+        0x00, 0x00, // Port 0
+    ];
+    client.write_all(&udp_req).await.unwrap();
+    
+    // Should succeed with authentication
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x00, "Reply REP should be 0x00 (success)");
+}
+
+#[tokio::test]
+async fn test_socks5_udp_associate_domain_target() {
+    let udp_echo_addr = start_udp_echo_server().await;
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // UDP ASSOCIATE request
+    let udp_req = [
+        0x05, 0x03, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00,
+    ];
+    client.write_all(&udp_req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0x00, "Should succeed");
+    
+    // Extract relay address
+    let relay_ip = std::net::Ipv4Addr::new(reply[4], reply[5], reply[6], reply[7]);
+    let relay_port = u16::from_be_bytes([reply[8], reply[9]]);
+    let relay_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(relay_ip, relay_port));
+    
+    let udp_client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    
+    // Test with domain name target
+    let test_data = b"Domain test!";
+    let domain = b"127.0.0.1";
+    let target_port = udp_echo_addr.port().to_be_bytes();
+    
+    let mut socks_packet = vec![
+        0x00, 0x00, // RSV
+        0x00,       // FRAG
+        0x03,       // ATYP (Domain)
+    ];
+    socks_packet.push(domain.len() as u8);         // Domain length
+    socks_packet.extend_from_slice(domain);        // Domain
+    socks_packet.extend_from_slice(&target_port);  // Port
+    socks_packet.extend_from_slice(test_data);     // Data
+    
+    udp_client.send_to(&socks_packet, relay_addr).await.unwrap();
+    
+    let mut response_buf = vec![0u8; 1024];
+    let (n, _) = tokio::time::timeout(Duration::from_secs(5), udp_client.recv_from(&mut response_buf))
+        .await
+        .unwrap()
+        .unwrap();
+    
+    // Response should have domain header (RSV + FRAG + ATYP + LEN + DOMAIN + PORT)
+    let expected_header_len = 2 + 1 + 1 + 1 + domain.len() + 2;
+    let response_data = &response_buf[expected_header_len..n];
+    assert_eq!(response_data, test_data);
 }

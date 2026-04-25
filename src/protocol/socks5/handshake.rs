@@ -11,6 +11,7 @@ pub enum SocksCommand {
     UdpAssociate,
 }
 
+#[derive(Debug, Clone)]
 pub enum TargetAddr {
     Ipv4([u8; 4], u16),
     Domain(String, u16),

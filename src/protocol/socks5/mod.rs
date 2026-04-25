@@ -1,5 +1,6 @@
 pub mod handshake;
 pub mod tcp_connect;
+pub mod udp_associate;
 
 use tokio::net::TcpStream;
 use std::net::SocketAddr;
@@ -31,6 +32,9 @@ async fn handle_socks5_inner(mut stream: TcpStream, _addr: SocketAddr, users: Op
     match request.command {
         handshake::SocksCommand::Connect => {
             tcp_connect::handle_connect(&mut stream, &request).await?;
+        }
+        handshake::SocksCommand::UdpAssociate => {
+            udp_associate::handle_udp_associate(&mut stream, &request).await?;
         }
         _ => {
             handshake::send_reply(&mut stream, 0x07, &request).await?; // Command not supported
