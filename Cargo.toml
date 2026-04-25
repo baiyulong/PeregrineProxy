@@ -1,0 +1,31 @@
+[package]
+name = "peregrine"
+version = "0.1.0"
+edition = "2021"
+description = "A high-performance, lightweight proxy server"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["http1", "server", "client"] }
+hyper-util = { version = "0.1", features = ["tokio", "http1", "server", "client-legacy"] }
+http-body-util = "0.1"
+bytes = "1"
+rustls = "0.23"
+tokio-rustls = "0.26"
+webpki-roots = "1.0"
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+prometheus-client = "0.22"
+dashmap = "6"
+ipnet = "2"
+regex = "1"
+globset = "0.4"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+pin-project-lite = "0.2"
