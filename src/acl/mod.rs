@@ -1,5 +1,6 @@
 pub mod rule;
 pub mod ip_filter;
+pub mod auth;
 
 use std::net::IpAddr;
 use rule::{AclAction, AclRule};

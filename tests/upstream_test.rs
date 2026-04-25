@@ -166,7 +166,7 @@ async fn start_socks5_proxy() -> std::net::SocketAddr {
         loop {
             let (stream, peer_addr) = listener.accept().await.unwrap();
             tokio::spawn(async move {
-                peregrine::protocol::socks5::handle_socks5(stream, peer_addr).await;
+                peregrine::protocol::socks5::handle_socks5(stream, peer_addr, None).await;
             });
         }
     });

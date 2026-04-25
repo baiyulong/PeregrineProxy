@@ -27,14 +27,20 @@ async fn start_echo_server() -> std::net::SocketAddr {
 
 /// Start a SOCKS5 proxy
 async fn start_socks5_proxy() -> std::net::SocketAddr {
+    start_socks5_proxy_with_auth(None).await
+}
+
+/// Start a SOCKS5 proxy with optional authentication
+async fn start_socks5_proxy_with_auth(users: Option<Vec<peregrine::config::UserCredential>>) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     
     tokio::spawn(async move {
         loop {
             let (stream, peer_addr) = listener.accept().await.unwrap();
+            let users = users.clone();
             tokio::spawn(async move {
-                peregrine::protocol::socks5::handle_socks5(stream, peer_addr).await;
+                peregrine::protocol::socks5::handle_socks5(stream, peer_addr, users).await;
             });
         }
     });
@@ -248,4 +254,117 @@ async fn test_socks5_connection_refused() {
     client.read_exact(&mut reply).await.unwrap();
     assert_eq!(reply[0], 0x05, "Reply VER should be 5");
     assert_eq!(reply[1], 0x05, "Reply REP should be 0x05 (connection refused)");
+}
+
+#[tokio::test]
+async fn test_socks5_auth_success() {
+    let echo_addr = start_echo_server().await;
+    let users = vec![peregrine::config::UserCredential {
+        username: "testuser".into(),
+        password: "testpass".into(),
+    }];
+    let proxy_addr = start_socks5_proxy_with_auth(Some(users)).await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Offer both methods
+    client.write_all(&[0x05, 0x02, 0x00, 0x02]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x02]); // Server selected username/password
+    
+    // Send credentials (RFC 1929)
+    let username = b"testuser";
+    let password = b"testpass";
+    let mut auth = vec![0x01]; // VER
+    auth.push(username.len() as u8); // ULEN
+    auth.extend_from_slice(username);
+    auth.push(password.len() as u8); // PLEN
+    auth.extend_from_slice(password);
+    client.write_all(&auth).await.unwrap();
+    
+    let mut auth_resp = [0u8; 2];
+    client.read_exact(&mut auth_resp).await.unwrap();
+    assert_eq!(auth_resp, [0x01, 0x00]); // Success
+    
+    // Now CONNECT should work
+    let port = echo_addr.port().to_be_bytes();
+    let ip = match echo_addr.ip() {
+        std::net::IpAddr::V4(v4) => v4.octets(),
+        _ => panic!(),
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
+    req.extend_from_slice(&ip);
+    req.extend_from_slice(&port);
+    client.write_all(&req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0x00); // Success
+    
+    // Data transfer
+    client.write_all(b"Auth works!").await.unwrap();
+    let mut buf = vec![0u8; 4096];
+    let n = client.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"Auth works!");
+}
+
+#[tokio::test]
+async fn test_socks5_auth_failure() {
+    let users = vec![peregrine::config::UserCredential {
+        username: "testuser".into(),
+        password: "testpass".into(),
+    }];
+    let proxy_addr = start_socks5_proxy_with_auth(Some(users)).await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    client.write_all(&[0x05, 0x02, 0x00, 0x02]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x02]);
+    
+    // Send wrong credentials
+    let username = b"wrong";
+    let password = b"creds";
+    let mut auth = vec![0x01];
+    auth.push(username.len() as u8);
+    auth.extend_from_slice(username);
+    auth.push(password.len() as u8);
+    auth.extend_from_slice(password);
+    client.write_all(&auth).await.unwrap();
+    
+    let mut auth_resp = [0u8; 2];
+    client.read_exact(&mut auth_resp).await.unwrap();
+    assert_eq!(auth_resp[1], 0x01); // Failure (non-zero = failure)
+}
+
+#[tokio::test] 
+async fn test_socks5_no_auth_when_not_configured() {
+    // No users configured = no auth required
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_socks5_proxy_with_auth(None).await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Only offer no-auth
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]); // No auth selected
+    
+    // CONNECT should work directly
+    let port = echo_addr.port().to_be_bytes();
+    let ip = match echo_addr.ip() {
+        std::net::IpAddr::V4(v4) => v4.octets(),
+        _ => panic!(),
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x01];
+    req.extend_from_slice(&ip);
+    req.extend_from_slice(&port);
+    client.write_all(&req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0x00);
 }

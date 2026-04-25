@@ -85,7 +85,7 @@ async fn handle_connection(stream: tokio::net::TcpStream, addr: std::net::Socket
         }
         DetectedProtocol::Socks5 => {
             tracing::debug!("SOCKS5 protocol detected from {}", addr);
-            socks5::handle_socks5(stream, addr).await;
+            socks5::handle_socks5(stream, addr, None).await;
         }
         DetectedProtocol::Unknown => {
             tracing::warn!("Unknown protocol from {}, closing connection", addr);

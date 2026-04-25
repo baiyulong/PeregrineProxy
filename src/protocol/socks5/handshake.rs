@@ -2,6 +2,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
 use crate::error::{ProxyError, ProxyResult};
+use crate::config::UserCredential;
+use crate::acl::auth;
 
 pub enum SocksCommand {
     Connect,
@@ -23,7 +25,7 @@ pub struct SocksRequest {
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Phase 1: Negotiate authentication method
-pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
+pub async fn negotiate_method(stream: &mut TcpStream, users: Option<&[UserCredential]>) -> ProxyResult<u8> {
     // Read: VER | NMETHODS | METHODS...
     let mut header = [0u8; 2];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut header))
@@ -42,11 +44,21 @@ pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
     
-    // Check if no-auth (0x00) is supported
-    let selected = if methods.contains(&0x00) {
-        0x00 // No authentication
+    // Choose method based on configuration
+    let selected = if let Some(_) = users {
+        // Users are configured, prefer username/password authentication
+        if methods.contains(&0x02) {
+            0x02 // Username/password authentication
+        } else {
+            0xFF // No acceptable methods
+        }
     } else {
-        0xFF // No acceptable methods
+        // No users configured, use no authentication
+        if methods.contains(&0x00) {
+            0x00 // No authentication
+        } else {
+            0xFF // No acceptable methods
+        }
     };
     
     // Reply: VER | METHOD
@@ -57,6 +69,66 @@ pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
     }
     
     Ok(selected)
+}
+
+/// Phase 1.5: Handle username/password authentication (RFC 1929)
+pub async fn authenticate_user(stream: &mut TcpStream, users: &[UserCredential]) -> ProxyResult<()> {
+    // Read: VER | ULEN | USERNAME | PLEN | PASSWORD
+    let mut ver = [0u8; 1];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut ver))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+    
+    if ver[0] != 0x01 {
+        return Err(ProxyError::Socks5("Invalid auth version".into()));
+    }
+    
+    // Read username length
+    let mut ulen = [0u8; 1];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut ulen))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+    
+    // Read username
+    let mut username = vec![0u8; ulen[0] as usize];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut username))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+    
+    // Read password length
+    let mut plen = [0u8; 1];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut plen))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+    
+    // Read password
+    let mut password = vec![0u8; plen[0] as usize];
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut password))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+    
+    // Verify credentials
+    let username_str = String::from_utf8(username)
+        .map_err(|_| ProxyError::Socks5("Invalid username encoding".into()))?;
+    let password_str = String::from_utf8(password)
+        .map_err(|_| ProxyError::Socks5("Invalid password encoding".into()))?;
+    
+    let authenticated = auth::verify_credentials(&username_str, &password_str, users);
+    
+    // Reply: VER | STATUS (0x00=success, 0x01=failure)
+    let status = if authenticated { 0x00 } else { 0x01 };
+    stream.write_all(&[0x01, status]).await.map_err(ProxyError::Io)?;
+    
+    if !authenticated {
+        return Err(ProxyError::Socks5("Authentication failed".into()));
+    }
+    
+    Ok(())
 }
 
 /// Phase 2: Read SOCKS5 request
