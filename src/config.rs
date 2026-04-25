@@ -110,7 +110,10 @@ pub struct MetricsConfig {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "peregrine", about = "High-performance lightweight proxy server")]
+#[command(
+    name = "peregrine",
+    about = "High-performance lightweight proxy server"
+)]
 pub struct CliArgs {
     /// Path to configuration file
     #[arg(short, long, default_value = "config.yaml")]

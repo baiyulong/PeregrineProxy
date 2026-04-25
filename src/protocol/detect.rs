@@ -11,17 +11,17 @@ pub fn detect_protocol(buf: &[u8]) -> DetectedProtocol {
     if buf.is_empty() {
         return DetectedProtocol::Unknown;
     }
-    
+
     // SOCKS5: first byte is 0x05
     if buf[0] == 0x05 {
         return DetectedProtocol::Socks5;
     }
-    
+
     // HTTP: check if buffer starts with an HTTP method
     if is_http_method_prefix(buf) {
         return DetectedProtocol::Http;
     }
-    
+
     DetectedProtocol::Unknown
 }
 
@@ -37,7 +37,7 @@ fn is_http_method_prefix(buf: &[u8]) -> bool {
         b"CONNECT ",
         b"TRACE ",
     ];
-    
+
     for method in METHODS {
         if buf.len() >= method.len() && &buf[..method.len()] == *method {
             return true;

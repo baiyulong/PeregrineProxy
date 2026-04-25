@@ -1,13 +1,13 @@
-pub mod rule;
-pub mod ip_filter;
 pub mod auth;
 pub mod domain_filter;
+pub mod ip_filter;
+pub mod rule;
 
-use std::net::IpAddr;
-use std::collections::HashSet;
-use rule::{AclAction, AclRule};
-use domain_filter::DomainFilter;
 use crate::config::{AccessControlConfig, UserCredential};
+use domain_filter::DomainFilter;
+use rule::{AclAction, AclRule};
+use std::collections::HashSet;
+use std::net::IpAddr;
 
 pub struct AccessController {
     default_action: AclAction,
@@ -22,7 +22,7 @@ impl AccessController {
             crate::config::AclActionConfig::Deny => AclAction::Deny,
             crate::config::AclActionConfig::Authenticate => AclAction::Authenticate,
         };
-        
+
         let mut rules = Vec::new();
         for rule_cfg in &config.rules {
             let action = match rule_cfg.action {
@@ -30,11 +30,12 @@ impl AccessController {
                 crate::config::AclActionConfig::Deny => AclAction::Deny,
                 crate::config::AclActionConfig::Authenticate => AclAction::Authenticate,
             };
-            
+
             let src_ip = if let Some(ref ips) = rule_cfg.src_ip {
                 let mut nets = Vec::new();
                 for ip_str in ips {
-                    let net: ipnet::IpNet = ip_str.parse()
+                    let net: ipnet::IpNet = ip_str
+                        .parse()
                         .map_err(|e| anyhow::anyhow!("Invalid CIDR '{}': {}", ip_str, e))?;
                     nets.push(net);
                 }
@@ -68,15 +69,29 @@ impl AccessController {
             } else {
                 None
             };
-            
-            rules.push(AclRule { action, src_ip, dst_domain, http_methods, auth_users });
+
+            rules.push(AclRule {
+                action,
+                src_ip,
+                dst_domain,
+                http_methods,
+                auth_users,
+            });
         }
-        
-        Ok(Self { default_action, rules })
+
+        Ok(Self {
+            default_action,
+            rules,
+        })
     }
-    
+
     /// Check access with IP, domain, and HTTP method filtering
-    pub fn check_request(&self, src_ip: &IpAddr, dst_domain: Option<&str>, method: Option<&str>) -> AclAction {
+    pub fn check_request(
+        &self,
+        src_ip: &IpAddr,
+        dst_domain: Option<&str>,
+        method: Option<&str>,
+    ) -> AclAction {
         for rule in &self.rules {
             if self.rule_matches_full(rule, src_ip, dst_domain, method) {
                 return rule.action.clone();
@@ -84,31 +99,35 @@ impl AccessController {
         }
         self.default_action.clone()
     }
-    
+
     /// Check access with both IP and domain filtering
     /// This is the main method that evaluates all ACL rules
     pub fn check_access(&self, src_ip: &IpAddr, dst_domain: Option<&str>) -> AclAction {
         self.check_request(src_ip, dst_domain, None)
     }
-    
+
     /// Check if a connection from the given source IP is allowed (backward compatibility)
     pub fn check_ip(&self, src_ip: &IpAddr) -> AclAction {
         self.check_access(src_ip, None)
     }
-    
+
     /// Get auth users for the first matching rule that returns Authenticate action
     /// Returns None if no matching rule has Authenticate action or auth users configured
-    pub fn get_auth_users_for_rule(&self, src_ip: &IpAddr, dst_domain: Option<&str>) -> Option<&[UserCredential]> {
+    pub fn get_auth_users_for_rule(
+        &self,
+        src_ip: &IpAddr,
+        dst_domain: Option<&str>,
+    ) -> Option<&[UserCredential]> {
         for rule in &self.rules {
             if self.rule_matches(rule, src_ip, dst_domain) {
                 if rule.action == AclAction::Authenticate {
-                    return rule.auth_users.as_ref().map(|users| users.as_slice());
+                    return rule.auth_users.as_deref();
                 }
                 // If rule matches but action is not Authenticate, no auth needed
                 return None;
             }
         }
-        
+
         // Check default action
         if self.default_action == AclAction::Authenticate {
             // For default Authenticate action, we don't have users configured
@@ -120,44 +139,50 @@ impl AccessController {
     }
 
     /// Check if a rule matches the given IP, domain, and method
-    fn rule_matches_full(&self, rule: &AclRule, src_ip: &IpAddr, dst_domain: Option<&str>, method: Option<&str>) -> bool {
+    fn rule_matches_full(
+        &self,
+        rule: &AclRule,
+        src_ip: &IpAddr,
+        dst_domain: Option<&str>,
+        method: Option<&str>,
+    ) -> bool {
         // All conditions in a rule must match for the rule to apply (AND logic)
-        
+
         // Check IP filter
         if !self.rule_matches_ip(rule, src_ip) {
             return false;
         }
-        
+
         // Check domain filter
         if !self.rule_matches_domain(rule, dst_domain) {
             return false;
         }
-        
+
         // Check method filter
         if !self.rule_matches_method(rule, method) {
             return false;
         }
-        
+
         true
     }
 
     /// Check if a rule matches the given IP and domain
     fn rule_matches(&self, rule: &AclRule, src_ip: &IpAddr, dst_domain: Option<&str>) -> bool {
         // All conditions in a rule must match for the rule to apply (AND logic)
-        
+
         // Check IP filter
         if !self.rule_matches_ip(rule, src_ip) {
             return false;
         }
-        
+
         // Check domain filter
         if !self.rule_matches_domain(rule, dst_domain) {
             return false;
         }
-        
+
         true
     }
-    
+
     fn rule_matches_ip(&self, rule: &AclRule, src_ip: &IpAddr) -> bool {
         // If no src_ip filter, the rule matches all IPs
         match &rule.src_ip {
@@ -165,7 +190,7 @@ impl AccessController {
             None => true, // No IP restriction = matches all
         }
     }
-    
+
     fn rule_matches_domain(&self, rule: &AclRule, dst_domain: Option<&str>) -> bool {
         match (&rule.dst_domain, dst_domain) {
             (Some(domain_filter), Some(domain)) => {

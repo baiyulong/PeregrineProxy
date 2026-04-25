@@ -1,6 +1,6 @@
-use ipnet::IpNet;
 use crate::acl::domain_filter::DomainFilter;
 use crate::config::UserCredential;
+use ipnet::IpNet;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]

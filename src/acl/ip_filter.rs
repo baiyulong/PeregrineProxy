@@ -1,5 +1,5 @@
-use std::net::IpAddr;
 use ipnet::IpNet;
+use std::net::IpAddr;
 
 /// Check if an IP address matches any of the given CIDR networks
 pub fn ip_matches(addr: &IpAddr, networks: &[IpNet]) -> bool {

@@ -1,7 +1,7 @@
+use crate::error::{ProxyError, ProxyResult};
+use crate::upstream::{BoxedStream, ConnectTarget, UpstreamConnector};
 use async_trait::async_trait;
 use tokio::net::TcpStream;
-use crate::upstream::{ConnectTarget, UpstreamConnector, BoxedStream};
-use crate::error::{ProxyError, ProxyResult};
 
 pub struct DirectConnector;
 

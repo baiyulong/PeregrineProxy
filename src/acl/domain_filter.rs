@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::RegexSet;
+use std::collections::HashSet;
 
 /// Domain filter that supports both glob patterns and regular expressions
 #[derive(Debug, Clone)]
@@ -23,9 +23,7 @@ impl DomainFilter {
         let mut has_globs = false;
 
         for pattern in patterns {
-            if pattern.starts_with('~') {
-                // Regex pattern (remove the ~ prefix)
-                let regex_pattern = &pattern[1..];
+            if let Some(regex_pattern) = pattern.strip_prefix('~') {
                 regex_patterns.push(regex_pattern);
             } else if pattern.contains('*') || pattern.contains('?') {
                 // Glob pattern
@@ -40,15 +38,20 @@ impl DomainFilter {
         }
 
         let glob_set = if has_globs {
-            Some(glob_builder.build()
-                .map_err(|e| anyhow::anyhow!("Failed to build glob set: {}", e))?)
+            Some(
+                glob_builder
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("Failed to build glob set: {}", e))?,
+            )
         } else {
             None
         };
 
         let regex_set = if !regex_patterns.is_empty() {
-            Some(RegexSet::new(&regex_patterns)
-                .map_err(|e| anyhow::anyhow!("Failed to build regex set: {}", e))?)
+            Some(
+                RegexSet::new(&regex_patterns)
+                    .map_err(|e| anyhow::anyhow!("Failed to build regex set: {}", e))?,
+            )
         } else {
             None
         };
@@ -86,9 +89,7 @@ impl DomainFilter {
 
     /// Returns true if this filter has no patterns (matches nothing)
     pub fn is_empty(&self) -> bool {
-        self.exact_matches.is_empty() && 
-        self.glob_set.is_none() && 
-        self.regex_set.is_none()
+        self.exact_matches.is_empty() && self.glob_set.is_none() && self.regex_set.is_none()
     }
 }
 
@@ -139,7 +140,7 @@ mod tests {
             "~.*\\.regex\\.net$".to_string(),
         ];
         let filter = DomainFilter::new(&patterns).unwrap();
-        
+
         assert!(filter.matches("exact.com"));
         assert!(filter.matches("sub.wildcard.com"));
         assert!(filter.matches("sub.regex.net"));

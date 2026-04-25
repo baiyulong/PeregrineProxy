@@ -22,7 +22,7 @@ logging:
   level: info
 "#;
     let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-    
+
     if let peregrine::config::UpstreamConfig::Http { addr, auth, tls } = &config.upstream {
         assert_eq!(addr, "secure-proxy.example.com:443");
         assert_eq!(tls, &Some(true));
@@ -33,7 +33,7 @@ logging:
     }
 }
 
-#[test] 
+#[test]
 fn test_upstream_socks5_tls_config() {
     // Test SOCKS5 upstream with TLS enabled
     let yaml = r#"
@@ -52,7 +52,7 @@ logging:
   level: info
 "#;
     let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-    
+
     if let peregrine::config::UpstreamConfig::Socks5 { addr, auth, tls } = &config.upstream {
         assert_eq!(addr, "secure-socks.example.com:443");
         assert_eq!(tls, &Some(true));
@@ -80,9 +80,9 @@ logging:
   level: info
 "#;
     let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
-    
+
     if let peregrine::config::UpstreamConfig::Http { tls, .. } = &config.upstream {
-        assert_eq!(tls, &None);  // Should be None when not specified
+        assert_eq!(tls, &None); // Should be None when not specified
     } else {
         panic!("Expected HTTP upstream config");
     }
@@ -92,7 +92,11 @@ logging:
 fn test_load_example_config() {
     // Test loading the example config file
     let config = AppConfig::load_from_file("config.example.yaml");
-    assert!(config.is_ok(), "Failed to load example config: {:?}", config.err());
+    assert!(
+        config.is_ok(),
+        "Failed to load example config: {:?}",
+        config.err()
+    );
 }
 
 #[test]

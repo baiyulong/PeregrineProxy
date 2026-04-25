@@ -1,9 +1,9 @@
+use crate::acl::auth;
+use crate::config::UserCredential;
+use crate::error::{ProxyError, ProxyResult};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
-use crate::error::{ProxyError, ProxyResult};
-use crate::config::UserCredential;
-use crate::acl::auth;
 
 pub enum SocksCommand {
     Connect,
@@ -26,27 +26,30 @@ pub struct SocksRequest {
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Phase 1: Negotiate authentication method
-pub async fn negotiate_method(stream: &mut TcpStream, users: Option<&[UserCredential]>) -> ProxyResult<u8> {
+pub async fn negotiate_method(
+    stream: &mut TcpStream,
+    users: Option<&[UserCredential]>,
+) -> ProxyResult<u8> {
     // Read: VER | NMETHODS | METHODS...
     let mut header = [0u8; 2];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut header))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     if header[0] != 0x05 {
         return Err(ProxyError::Socks5("Invalid SOCKS version".into()));
     }
-    
+
     let nmethods = header[1] as usize;
     let mut methods = vec![0u8; nmethods];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut methods))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     // Choose method based on configuration
-    let selected = if let Some(_) = users {
+    let selected = if users.is_some() {
         // Users are configured, prefer username/password authentication
         if methods.contains(&0x02) {
             0x02 // Username/password authentication
@@ -61,74 +64,85 @@ pub async fn negotiate_method(stream: &mut TcpStream, users: Option<&[UserCreden
             0xFF // No acceptable methods
         }
     };
-    
+
     // Reply: VER | METHOD
-    stream.write_all(&[0x05, selected]).await.map_err(ProxyError::Io)?;
-    
+    stream
+        .write_all(&[0x05, selected])
+        .await
+        .map_err(ProxyError::Io)?;
+
     if selected == 0xFF {
-        return Err(ProxyError::Socks5("No acceptable authentication method".into()));
+        return Err(ProxyError::Socks5(
+            "No acceptable authentication method".into(),
+        ));
     }
-    
+
     Ok(selected)
 }
 
 /// Phase 1.5: Handle username/password authentication (RFC 1929)
-pub async fn authenticate_user(stream: &mut TcpStream, users: &[UserCredential]) -> ProxyResult<()> {
+pub async fn authenticate_user(
+    stream: &mut TcpStream,
+    users: &[UserCredential],
+) -> ProxyResult<()> {
     // Read: VER | ULEN | USERNAME | PLEN | PASSWORD
     let mut ver = [0u8; 1];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut ver))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     if ver[0] != 0x01 {
         return Err(ProxyError::Socks5("Invalid auth version".into()));
     }
-    
+
     // Read username length
     let mut ulen = [0u8; 1];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut ulen))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     // Read username
     let mut username = vec![0u8; ulen[0] as usize];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut username))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     // Read password length
     let mut plen = [0u8; 1];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut plen))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     // Read password
     let mut password = vec![0u8; plen[0] as usize];
     timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut password))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     // Verify credentials
     let username_str = String::from_utf8(username)
         .map_err(|_| ProxyError::Socks5("Invalid username encoding".into()))?;
     let password_str = String::from_utf8(password)
         .map_err(|_| ProxyError::Socks5("Invalid password encoding".into()))?;
-    
+
     let authenticated = auth::verify_credentials(&username_str, &password_str, users);
-    
+
     // Reply: VER | STATUS (0x00=success, 0x01=failure)
     let status = if authenticated { 0x00 } else { 0x01 };
-    stream.write_all(&[0x01, status]).await.map_err(ProxyError::Io)?;
-    
+    stream
+        .write_all(&[0x01, status])
+        .await
+        .map_err(ProxyError::Io)?;
+
     if !authenticated {
         return Err(ProxyError::Socks5("Authentication failed".into()));
     }
-    
+
     Ok(())
 }
 
@@ -140,21 +154,29 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
-    
+
     if header[0] != 0x05 {
-        return Err(ProxyError::Socks5("Invalid SOCKS version in request".into()));
+        return Err(ProxyError::Socks5(
+            "Invalid SOCKS version in request".into(),
+        ));
     }
-    
+
     let command = match header[1] {
         0x01 => SocksCommand::Connect,
         0x02 => SocksCommand::Bind,
         0x03 => SocksCommand::UdpAssociate,
-        _ => return Err(ProxyError::Socks5(format!("Unknown command: {}", header[1]))),
+        _ => {
+            return Err(ProxyError::Socks5(format!(
+                "Unknown command: {}",
+                header[1]
+            )))
+        }
     };
-    
+
     // Parse address based on ATYP
     let target = match header[3] {
-        0x01 => { // IPv4
+        0x01 => {
+            // IPv4
             let mut addr = [0u8; 4];
             timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut addr))
                 .await
@@ -168,7 +190,8 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
             let port = u16::from_be_bytes(port_buf);
             TargetAddr::Ipv4(addr, port)
         }
-        0x03 => { // Domain
+        0x03 => {
+            // Domain
             let mut len = [0u8; 1];
             timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut len))
                 .await
@@ -189,7 +212,8 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
                 .map_err(|_| ProxyError::Socks5("Invalid domain encoding".into()))?;
             TargetAddr::Domain(domain_str, port)
         }
-        0x04 => { // IPv6
+        0x04 => {
+            // IPv6
             let mut addr = [0u8; 16];
             timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut addr))
                 .await
@@ -203,14 +227,23 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
             let port = u16::from_be_bytes(port_buf);
             TargetAddr::Ipv6(addr, port)
         }
-        _ => return Err(ProxyError::Socks5(format!("Unknown address type: {}", header[3]))),
+        _ => {
+            return Err(ProxyError::Socks5(format!(
+                "Unknown address type: {}",
+                header[3]
+            )))
+        }
     };
-    
+
     Ok(SocksRequest { command, target })
 }
 
 /// Send SOCKS5 reply
-pub async fn send_reply(stream: &mut TcpStream, rep: u8, _request: &SocksRequest) -> ProxyResult<()> {
+pub async fn send_reply(
+    stream: &mut TcpStream,
+    rep: u8,
+    _request: &SocksRequest,
+) -> ProxyResult<()> {
     // Reply: VER | REP | RSV | ATYP | BND.ADDR | BND.PORT
     // Use 0.0.0.0:0 as bind address
     let reply = [

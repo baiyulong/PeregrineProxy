@@ -1,18 +1,18 @@
-use std::sync::Arc;
-use std::time::Duration;
-use std::io::BufReader;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, Notify, watch};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::{TlsAcceptor, server::TlsStream};
-use rustls::ServerConfig;
-use rustls::pki_types::CertificateDer;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use crate::config::{AppConfig, TlsConfig};
 use crate::protocol::detect::{detect_protocol, DetectedProtocol};
 use crate::protocol::http_handler;
 use crate::protocol::socks5;
+use rustls::pki_types::CertificateDer;
+use rustls::ServerConfig;
+use std::io::BufReader;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{watch, Notify, Semaphore};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 #[cfg(unix)]
 use tokio::signal::unix::{signal, SignalKind};
@@ -20,7 +20,7 @@ use tokio::signal::unix::{signal, SignalKind};
 /// A stream that can be either plain TCP or TLS-wrapped
 pub enum ProxyStream {
     Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for ProxyStream {
@@ -91,37 +91,37 @@ fn load_tls_acceptor(config: &TlsConfig) -> anyhow::Result<TlsAcceptor> {
         .map_err(|e| anyhow::anyhow!("Failed to open cert file {}: {}", config.cert, e))?;
     let key_file = std::fs::File::open(&config.key)
         .map_err(|e| anyhow::anyhow!("Failed to open key file {}: {}", config.key, e))?;
-    
+
     let certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut BufReader::new(cert_file))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| anyhow::anyhow!("Failed to parse certificates: {}", e))?;
-    
+
     if certs.is_empty() {
         return Err(anyhow::anyhow!("No certificates found in {}", config.cert));
     }
-    
+
     let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
         .map_err(|e| anyhow::anyhow!("Failed to parse private key: {}", e))?
         .ok_or_else(|| anyhow::anyhow!("No private key found in {}", config.key))?;
-    
+
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key.into())
+        .with_single_cert(certs, key)
         .map_err(|e| anyhow::anyhow!("Failed to build TLS config: {}", e))?;
-    
+
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
 pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
     // Create a watch channel for config updates
     let (config_tx, config_rx) = watch::channel(config.clone());
-    
+
     // Store the current config
     let current_config = config_rx.borrow().clone();
     let max_conn = current_config.server.max_connections.unwrap_or(10000);
     let semaphore = Arc::new(Semaphore::new(max_conn));
     let shutdown = Arc::new(Notify::new());
-    
+
     // Spawn SIGHUP listener for config reloading (Unix only)
     #[cfg(unix)]
     {
@@ -135,11 +135,14 @@ pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
                     return;
                 }
             };
-            
+
             loop {
                 sighup.recv().await;
-                tracing::info!("SIGHUP received, reloading config from {}", config_path_owned);
-                
+                tracing::info!(
+                    "SIGHUP received, reloading config from {}",
+                    config_path_owned
+                );
+
                 match AppConfig::reload(&config_path_owned) {
                     Ok(new_config) => {
                         if let Err(e) = config_tx_clone.send(new_config) {
@@ -155,14 +158,14 @@ pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
             }
         });
     }
-    
+
     #[cfg(not(unix))]
     {
-        tracing::info!("Config hot-reload via SIGHUP is only supported on Unix systems");
+        eprintln!("Note: config hot-reload via SIGHUP is only supported on Unix systems");
     }
-    
+
     let mut listener_tasks = Vec::new();
-    
+
     for listen_cfg in &current_config.server.listen {
         let listener = TcpListener::bind(&listen_cfg.addr).await?;
         let protocol = listen_cfg.protocol.clone();
@@ -172,55 +175,68 @@ pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
         };
         let sem = semaphore.clone();
         let shutdown_signal = shutdown.clone();
-        
+
         let protocol_label = if tls_acceptor.is_some() {
             format!("{} with TLS", protocol_name(&protocol))
         } else {
             protocol_name(&protocol).to_string()
         };
+        eprintln!("Listening on {} ({})", listen_cfg.addr, protocol_label);
         tracing::info!("Listening on {} ({})", listen_cfg.addr, protocol_label);
-        
+
         let task = tokio::spawn(async move {
             accept_loop(listener, tls_acceptor, sem, shutdown_signal).await;
         });
         listener_tasks.push(task);
     }
-    
+
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
     tracing::info!("Shutdown signal received, stopping accept loops...");
     shutdown.notify_waiters();
-    
+
     // Wait for accept loops to stop
     for task in listener_tasks {
         let _ = task.await;
     }
-    
+
     // Wait for in-flight connections to drain
     let active_connections = max_conn - semaphore.available_permits();
     if active_connections > 0 {
-        tracing::info!("Waiting for {} active connections to drain...", active_connections);
-        
+        tracing::info!(
+            "Waiting for {} active connections to drain...",
+            active_connections
+        );
+
         let drain_result = tokio::time::timeout(
             Duration::from_secs(30),
             wait_for_connections(semaphore.clone(), max_conn),
-        ).await;
-        
+        )
+        .await;
+
         match drain_result {
             Ok(_) => tracing::info!("All connections drained gracefully"),
             Err(_) => {
                 let remaining = max_conn - semaphore.available_permits();
-                tracing::warn!("Shutdown timeout, forcing close with {} remaining connections", remaining);
+                tracing::warn!(
+                    "Shutdown timeout, forcing close with {} remaining connections",
+                    remaining
+                );
             }
         }
     } else {
         tracing::info!("No active connections to drain");
     }
-    
+
     Ok(())
 }
 
-async fn accept_loop(listener: TcpListener, tls_acceptor: Option<TlsAcceptor>, semaphore: Arc<Semaphore>, shutdown: Arc<Notify>) {
+async fn accept_loop(
+    listener: TcpListener,
+    tls_acceptor: Option<TlsAcceptor>,
+    semaphore: Arc<Semaphore>,
+    shutdown: Arc<Notify>,
+) {
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -232,14 +248,14 @@ async fn accept_loop(listener: TcpListener, tls_acceptor: Option<TlsAcceptor>, s
                                 let tls_acceptor = tls_acceptor.clone();
                                 tokio::spawn(async move {
                                     tracing::info!("New connection from {}", addr);
-                                    
+
                                     // Perform TLS handshake if configured
                                     let proxy_stream = match tls_acceptor {
                                         Some(acceptor) => {
                                             match acceptor.accept(stream).await {
                                                 Ok(tls_stream) => {
                                                     tracing::debug!("TLS handshake completed for {}", addr);
-                                                    ProxyStream::Tls(tls_stream)
+                                                    ProxyStream::Tls(Box::new(tls_stream))
                                                 }
                                                 Err(e) => {
                                                     tracing::error!("TLS handshake failed for {}: {}", addr, e);
@@ -250,7 +266,7 @@ async fn accept_loop(listener: TcpListener, tls_acceptor: Option<TlsAcceptor>, s
                                         }
                                         None => ProxyStream::Plain(stream),
                                     };
-                                    
+
                                     handle_connection(proxy_stream, addr).await;
                                     drop(permit);
                                 });
@@ -283,7 +299,7 @@ async fn handle_connection(stream: ProxyStream, addr: std::net::SocketAddr) {
     // For TLS streams, we can't peek to detect protocol
     // We'll need to read the first few bytes instead
     let mut buf = [0u8; 8];
-    
+
     let protocol_detected = match &stream {
         ProxyStream::Plain { .. } => {
             // For plain streams, use peek
@@ -306,7 +322,7 @@ async fn handle_connection(stream: ProxyStream, addr: std::net::SocketAddr) {
             DetectedProtocol::Http
         }
     };
-    
+
     match protocol_detected {
         DetectedProtocol::Http => {
             tracing::debug!("HTTP protocol detected from {}", addr);
@@ -342,7 +358,11 @@ async fn handle_http_with_stream(stream: ProxyStream) {
     }
 }
 
-async fn handle_socks5_with_stream(stream: ProxyStream, addr: std::net::SocketAddr, users: Option<Vec<crate::config::UserCredential>>) {
+async fn handle_socks5_with_stream(
+    stream: ProxyStream,
+    addr: std::net::SocketAddr,
+    users: Option<Vec<crate::config::UserCredential>>,
+) {
     match stream {
         ProxyStream::Plain(stream) => {
             socks5::handle_socks5(stream, addr, users).await;
@@ -350,7 +370,10 @@ async fn handle_socks5_with_stream(stream: ProxyStream, addr: std::net::SocketAd
         ProxyStream::Tls(_) => {
             // For now, TLS SOCKS5 is not implemented
             // This would require updating the entire SOCKS5 handler chain to work with generic streams
-            tracing::warn!("TLS SOCKS5 not yet implemented for connection from {}", addr);
+            tracing::warn!(
+                "TLS SOCKS5 not yet implemented for connection from {}",
+                addr
+            );
         }
     }
 }
@@ -422,7 +445,7 @@ mod tests {
         use std::io::Write;
         use tempfile::NamedTempFile;
         use tokio::sync::watch;
-        
+
         // Create a temporary config file
         let mut config_file = NamedTempFile::new().unwrap();
         let initial_config_content = r#"
@@ -442,26 +465,28 @@ upstream:
 logging:
   level: "info"
 "#;
-        config_file.write_all(initial_config_content.as_bytes()).unwrap();
+        config_file
+            .write_all(initial_config_content.as_bytes())
+            .unwrap();
         config_file.flush().unwrap();
-        
+
         let config_path = config_file.path().to_str().unwrap();
-        
+
         // Load initial config
         let initial_config = AppConfig::load_from_file(config_path).unwrap();
         assert_eq!(initial_config.server.max_connections, Some(100));
-        
+
         // Test the reload functionality
         let reloaded_config = AppConfig::reload(config_path).unwrap();
         assert_eq!(reloaded_config.server.max_connections, Some(100));
-        
+
         // Test watch channel for config distribution
         let (config_tx, config_rx) = watch::channel(initial_config.clone());
-        
+
         // Simulate config reload by sending new config through channel
         let updated_config = AppConfig::reload(config_path).unwrap();
         config_tx.send(updated_config).unwrap();
-        
+
         // Verify the watch channel received the update
         let received_config = config_rx.borrow().clone();
         assert_eq!(received_config.server.max_connections, Some(100));

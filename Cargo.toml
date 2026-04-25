@@ -31,5 +31,11 @@ async-trait = "0.1"
 pin-project-lite = "0.2"
 base64 = "0.22"
 
+[profile.release]
+opt-level = 3
+lto = "thin"        # 避免 fat-LTO 有时触发误报
+codegen-units = 1
+strip = "symbols"   # 去掉调试符号，减小体积
+
 [dev-dependencies]
 tempfile = "3"

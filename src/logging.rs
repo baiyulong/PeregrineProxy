@@ -1,17 +1,17 @@
 use crate::config::LoggingConfig;
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub fn init_logging(config: &LoggingConfig) -> anyhow::Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
     let format = config.format.as_deref().unwrap_or("text");
 
     match format {
         "json" => {
-            // JSON format for machine parsing
             let fmt_layer = fmt::layer()
                 .json()
+                .with_writer(std::io::stdout)
                 .with_target(true)
                 .with_thread_ids(true)
                 .with_file(true)
@@ -23,8 +23,8 @@ pub fn init_logging(config: &LoggingConfig) -> anyhow::Result<()> {
                 .init();
         }
         _ => {
-            // Default text format (CLF-like)
             let fmt_layer = fmt::layer()
+                .with_writer(std::io::stdout)
                 .with_target(true)
                 .with_thread_ids(false)
                 .with_file(false);
@@ -36,8 +36,6 @@ pub fn init_logging(config: &LoggingConfig) -> anyhow::Result<()> {
         }
     }
 
-    // If access_log path is configured, log a note about it
-    // (File appender support can be added with tracing-appender)
     if let Some(ref access_log) = config.access_log {
         tracing::info!("Access log will be written to: {}", access_log);
     }
