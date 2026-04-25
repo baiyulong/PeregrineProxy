@@ -1,18 +1,22 @@
 pub mod config;
 mod error;
+mod server;
 
 use clap::Parser;
 use config::{AppConfig, CliArgs};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = CliArgs::parse();
+    // Initialize basic logging
+    tracing_subscriber::fmt::init();
     
+    let args = CliArgs::parse();
     let config = AppConfig::load_from_file(&args.config)?;
     
-    println!("Peregrine proxy starting...");
-    println!("Loaded config from: {}", args.config);
-    println!("Listening on {} address(es)", config.server.listen.len());
+    tracing::info!("Peregrine proxy starting...");
+    tracing::info!("Loaded config from: {}", args.config);
+    
+    server::run(config).await?;
     
     Ok(())
 }
