@@ -86,6 +86,43 @@ async fn test_socks5_connect_ipv4() {
 }
 
 #[tokio::test]
+async fn test_socks5_connect_ipv6() {
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // CONNECT with IPv4-mapped IPv6 localhost (::ffff:127.0.0.1)
+    let port = echo_addr.port().to_be_bytes();
+    // IPv4-mapped IPv6: ::ffff:127.0.0.1
+    let ipv4_mapped_ipv6 = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0xffu8, 0xffu8, 127u8, 0u8, 0u8, 1u8];
+    
+    let mut connect_req = vec![0x05, 0x01, 0x00, 0x04]; // ATYP=IPv6
+    connect_req.extend_from_slice(&ipv4_mapped_ipv6);
+    connect_req.extend_from_slice(&port);
+    client.write_all(&connect_req).await.unwrap();
+    
+    let mut reply = [0u8; 10]; // Reply is still IPv4 format (10 bytes)
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x00, "Reply REP should be 0 (success)");
+    
+    // Data transfer
+    let test_data = b"Hello IPv6!";
+    client.write_all(test_data).await.unwrap();
+    
+    let mut echo = vec![0u8; 4096];
+    let n = client.read(&mut echo).await.unwrap();
+    assert_eq!(&echo[..n], test_data);
+}
+
+#[tokio::test]
 async fn test_socks5_connect_domain() {
     let echo_addr = start_echo_server().await;
     let proxy_addr = start_socks5_proxy().await;
@@ -133,4 +170,82 @@ async fn test_socks5_unsupported_method() {
     let mut resp = [0u8; 2];
     client.read_exact(&mut resp).await.unwrap();
     assert_eq!(resp, [0x05, 0xFF], "Should reject - no acceptable methods");
+}
+
+#[tokio::test]
+async fn test_socks5_unsupported_command_bind() {
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // BIND request (unsupported)
+    let bind_req = [
+        0x05, 0x02, 0x00, 0x01, // VER, CMD=BIND, RSV, ATYP=IPv4
+        127, 0, 0, 1, // 127.0.0.1
+        0x00, 0x50, // Port 80
+    ];
+    client.write_all(&bind_req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x07, "Reply REP should be 0x07 (command not supported)");
+}
+
+#[tokio::test] 
+async fn test_socks5_unsupported_command_udp() {
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // UDP ASSOCIATE request (unsupported)
+    let udp_req = [
+        0x05, 0x03, 0x00, 0x01, // VER, CMD=UDP_ASSOCIATE, RSV, ATYP=IPv4
+        127, 0, 0, 1, // 127.0.0.1
+        0x00, 0x50, // Port 80
+    ];
+    client.write_all(&udp_req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x07, "Reply REP should be 0x07 (command not supported)");
+}
+
+#[tokio::test]
+async fn test_socks5_connection_refused() {
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation
+    client.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x00]);
+    
+    // CONNECT to a non-existent port
+    let connect_req = [
+        0x05, 0x01, 0x00, 0x01, // VER, CMD=CONNECT, RSV, ATYP=IPv4
+        127, 0, 0, 1, // 127.0.0.1
+        0xFF, 0xFF, // Port 65535 (unlikely to be open)
+    ];
+    client.write_all(&connect_req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[0], 0x05, "Reply VER should be 5");
+    assert_eq!(reply[1], 0x05, "Reply REP should be 0x05 (connection refused)");
 }

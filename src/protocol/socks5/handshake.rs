@@ -1,5 +1,6 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::{timeout, Duration};
 use crate::error::{ProxyError, ProxyResult};
 
 pub enum SocksCommand {
@@ -19,11 +20,16 @@ pub struct SocksRequest {
     pub target: TargetAddr,
 }
 
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Phase 1: Negotiate authentication method
 pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
     // Read: VER | NMETHODS | METHODS...
     let mut header = [0u8; 2];
-    stream.read_exact(&mut header).await.map_err(ProxyError::Io)?;
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut header))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
     
     if header[0] != 0x05 {
         return Err(ProxyError::Socks5("Invalid SOCKS version".into()));
@@ -31,7 +37,10 @@ pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
     
     let nmethods = header[1] as usize;
     let mut methods = vec![0u8; nmethods];
-    stream.read_exact(&mut methods).await.map_err(ProxyError::Io)?;
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut methods))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
     
     // Check if no-auth (0x00) is supported
     let selected = if methods.contains(&0x00) {
@@ -54,7 +63,10 @@ pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
 pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
     // Read: VER | CMD | RSV | ATYP
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).await.map_err(ProxyError::Io)?;
+    timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut header))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
     
     if header[0] != 0x05 {
         return Err(ProxyError::Socks5("Invalid SOCKS version in request".into()));
@@ -71,19 +83,34 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
     let target = match header[3] {
         0x01 => { // IPv4
             let mut addr = [0u8; 4];
-            stream.read_exact(&mut addr).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut addr))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let mut port_buf = [0u8; 2];
-            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut port_buf))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let port = u16::from_be_bytes(port_buf);
             TargetAddr::Ipv4(addr, port)
         }
         0x03 => { // Domain
             let mut len = [0u8; 1];
-            stream.read_exact(&mut len).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut len))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let mut domain = vec![0u8; len[0] as usize];
-            stream.read_exact(&mut domain).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut domain))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let mut port_buf = [0u8; 2];
-            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut port_buf))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let port = u16::from_be_bytes(port_buf);
             let domain_str = String::from_utf8(domain)
                 .map_err(|_| ProxyError::Socks5("Invalid domain encoding".into()))?;
@@ -91,9 +118,15 @@ pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
         }
         0x04 => { // IPv6
             let mut addr = [0u8; 16];
-            stream.read_exact(&mut addr).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut addr))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let mut port_buf = [0u8; 2];
-            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut port_buf))
+                .await
+                .map_err(|_| ProxyError::Timeout)?
+                .map_err(ProxyError::Io)?;
             let port = u16::from_be_bytes(port_buf);
             TargetAddr::Ipv6(addr, port)
         }
