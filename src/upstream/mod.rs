@@ -1,6 +1,7 @@
 pub mod direct;
 pub mod http_proxy;
 pub mod socks5_proxy;
+pub mod chain;
 
 use async_trait::async_trait;
 use tokio::net::TcpStream;
@@ -13,6 +14,7 @@ use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
 
 /// Represents a target to connect to
+#[derive(Clone, Debug)]
 pub enum ConnectTarget {
     /// Connect to host:port (domain or IP)
     Address(String, u16),
@@ -83,11 +85,9 @@ impl UpstreamRouter {
                 auth: auth.clone(),
                 use_tls: tls.unwrap_or(false),
             }),
-            UpstreamConfig::Chain { chain: _ } => {
-                // Will be implemented in Task 16
-                tracing::warn!("Chain upstream not yet implemented, falling back to direct");
-                Arc::new(direct::DirectConnector)
-            }
+            UpstreamConfig::Chain { chain } => Arc::new(chain::ChainConnector {
+                chain: chain.clone(),
+            }),
         };
         
         Self { connector }

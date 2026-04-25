@@ -227,3 +227,36 @@ async fn test_upstream_router_socks5() {
     let n = stream.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..n], b"Router via SOCKS5!");
 }
+
+#[tokio::test]
+async fn test_upstream_router_chain() {
+    use peregrine::upstream::UpstreamRouter;
+    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::config::UpstreamConfig;
+    
+    let echo_addr = start_echo_server().await;
+    let http_proxy_addr = start_mock_http_proxy().await;
+    
+    // Test single-hop chain through router
+    let router = UpstreamRouter::from_config(&UpstreamConfig::Chain {
+        chain: vec![
+            UpstreamConfig::Http {
+                addr: http_proxy_addr.to_string(),
+                auth: None,
+                tls: None,
+            },
+            UpstreamConfig::Direct,
+        ],
+    });
+    
+    let mut stream = router.connector().connect(&ConnectTarget::Address(
+        "127.0.0.1".into(), echo_addr.port()
+    )).await.unwrap();
+    
+    use tokio::io::{AsyncWriteExt as _, AsyncReadExt as _};
+    stream.write_all(b"Router via chain!").await.unwrap();
+    
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"Router via chain!");
+}
