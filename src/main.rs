@@ -2,6 +2,7 @@ pub mod config;
 mod acl;
 mod error;
 mod logging;
+mod metrics;
 mod protocol;
 mod server;
 mod upstream;
