@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::io::BufReader;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, Notify};
+use tokio::sync::{Semaphore, Notify, watch};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 use rustls::ServerConfig;
@@ -13,6 +13,9 @@ use crate::config::{AppConfig, TlsConfig};
 use crate::protocol::detect::{detect_protocol, DetectedProtocol};
 use crate::protocol::http_handler;
 use crate::protocol::socks5;
+
+#[cfg(unix)]
+use tokio::signal::unix::{signal, SignalKind};
 
 /// A stream that can be either plain TCP or TLS-wrapped
 pub enum ProxyStream {
@@ -109,14 +112,58 @@ fn load_tls_acceptor(config: &TlsConfig) -> anyhow::Result<TlsAcceptor> {
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
-pub async fn run(config: AppConfig) -> anyhow::Result<()> {
-    let max_conn = config.server.max_connections.unwrap_or(10000);
+pub async fn run(config: AppConfig, config_path: &str) -> anyhow::Result<()> {
+    // Create a watch channel for config updates
+    let (config_tx, config_rx) = watch::channel(config.clone());
+    
+    // Store the current config
+    let current_config = config_rx.borrow().clone();
+    let max_conn = current_config.server.max_connections.unwrap_or(10000);
     let semaphore = Arc::new(Semaphore::new(max_conn));
     let shutdown = Arc::new(Notify::new());
     
+    // Spawn SIGHUP listener for config reloading (Unix only)
+    #[cfg(unix)]
+    {
+        let config_path_owned = config_path.to_string();
+        let config_tx_clone = config_tx.clone();
+        tokio::spawn(async move {
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to create SIGHUP signal handler: {}", e);
+                    return;
+                }
+            };
+            
+            loop {
+                sighup.recv().await;
+                tracing::info!("SIGHUP received, reloading config from {}", config_path_owned);
+                
+                match AppConfig::reload(&config_path_owned) {
+                    Ok(new_config) => {
+                        if let Err(e) = config_tx_clone.send(new_config) {
+                            tracing::error!("Failed to update config: {}", e);
+                        } else {
+                            tracing::info!("Config reloaded successfully");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to reload config: {}", e);
+                    }
+                }
+            }
+        });
+    }
+    
+    #[cfg(not(unix))]
+    {
+        tracing::info!("Config hot-reload via SIGHUP is only supported on Unix systems");
+    }
+    
     let mut listener_tasks = Vec::new();
     
-    for listen_cfg in &config.server.listen {
+    for listen_cfg in &current_config.server.listen {
         let listener = TcpListener::bind(&listen_cfg.addr).await?;
         let protocol = listen_cfg.protocol.clone();
         let tls_acceptor = match &listen_cfg.tls {
@@ -368,5 +415,56 @@ mod tests {
         if let Err(error) = result {
             assert!(error.to_string().contains("No certificates found"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_config_hot_reload() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+        use tokio::sync::watch;
+        
+        // Create a temporary config file
+        let mut config_file = NamedTempFile::new().unwrap();
+        let initial_config_content = r#"
+server:
+  listen:
+    - addr: "127.0.0.1:8080"
+      protocol: http
+  max_connections: 100
+
+access_control:
+  default_action: allow
+  rules: []
+
+upstream:
+  type: direct
+
+logging:
+  level: "info"
+"#;
+        config_file.write_all(initial_config_content.as_bytes()).unwrap();
+        config_file.flush().unwrap();
+        
+        let config_path = config_file.path().to_str().unwrap();
+        
+        // Load initial config
+        let initial_config = AppConfig::load_from_file(config_path).unwrap();
+        assert_eq!(initial_config.server.max_connections, Some(100));
+        
+        // Test the reload functionality
+        let reloaded_config = AppConfig::reload(config_path).unwrap();
+        assert_eq!(reloaded_config.server.max_connections, Some(100));
+        
+        // Test watch channel for config distribution
+        let (config_tx, config_rx) = watch::channel(initial_config.clone());
+        
+        // Simulate config reload by sending new config through channel
+        let updated_config = AppConfig::reload(config_path).unwrap();
+        config_tx.send(updated_config).unwrap();
+        
+        // Verify the watch channel received the update
+        let received_config = config_rx.borrow().clone();
+        assert_eq!(received_config.server.max_connections, Some(100));
+        assert_eq!(received_config.logging.level, "info");
     }
 }

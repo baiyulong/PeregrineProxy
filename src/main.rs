@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Peregrine proxy starting...");
     tracing::info!("Loaded config from: {}", args.config);
 
-    server::run(config).await?;
+    server::run(config, &args.config).await?;
 
     Ok(())
 }

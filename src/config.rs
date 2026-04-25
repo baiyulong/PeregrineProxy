@@ -131,4 +131,8 @@ impl AppConfig {
         let config: AppConfig = serde_yaml::from_str(&content)?;
         Ok(config)
     }
+
+    pub fn reload(path: &str) -> anyhow::Result<Self> {
+        Self::load_from_file(path)
+    }
 }
