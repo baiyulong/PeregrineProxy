@@ -32,6 +32,28 @@ fn make_rule_with_domain(action: AclActionConfig, src_ip: Option<Vec<String>>, d
     }
 }
 
+fn make_rule_with_method(action: AclActionConfig, http_method: Option<Vec<String>>) -> AclRuleConfig {
+    AclRuleConfig {
+        action,
+        src_ip: None,
+        dst_domain: None,
+        dst_port: None,
+        http_method,
+        auth: None,
+    }
+}
+
+fn make_rule_with_method_and_ip(action: AclActionConfig, src_ip: Option<Vec<String>>, http_method: Option<Vec<String>>) -> AclRuleConfig {
+    AclRuleConfig {
+        action,
+        src_ip,
+        dst_domain: None,
+        dst_port: None,
+        http_method,
+        auth: None,
+    }
+}
+
 #[test]
 fn test_default_allow() {
     let config = make_config(AclActionConfig::Allow, vec![]);
@@ -312,4 +334,166 @@ fn test_backward_compatibility_check_ip() {
     
     assert_eq!(acl.check_ip(&"192.168.1.1".parse().unwrap()), AclAction::Allow);
     assert_eq!(acl.check_ip(&"10.0.0.1".parse().unwrap()), AclAction::Deny);
+}
+
+// HTTP method filtering tests
+#[test]
+fn test_http_method_single_method_match() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![make_rule_with_method(
+            AclActionConfig::Deny,
+            Some(vec!["GET".into()]),
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    assert_eq!(acl.check_request(&ip, None, Some("GET")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("POST")), AclAction::Allow);
+    assert_eq!(acl.check_request(&ip, None, Some("HEAD")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_multiple_methods() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![make_rule_with_method(
+            AclActionConfig::Deny,
+            Some(vec!["GET".into(), "HEAD".into()]),
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    assert_eq!(acl.check_request(&ip, None, Some("GET")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("HEAD")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("POST")), AclAction::Allow);
+    assert_eq!(acl.check_request(&ip, None, Some("PUT")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_case_insensitive() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![make_rule_with_method(
+            AclActionConfig::Deny,
+            Some(vec!["get".into(), "Post".into()]),
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    // Should match with different cases
+    assert_eq!(acl.check_request(&ip, None, Some("GET")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("get")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("Get")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("POST")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("post")), AclAction::Deny);
+    assert_eq!(acl.check_request(&ip, None, Some("PUT")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_no_filter_matches_all() {
+    let config = make_config(
+        AclActionConfig::Deny,
+        vec![make_rule_with_method(
+            AclActionConfig::Allow,
+            None, // No method filter = matches all methods
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    assert_eq!(acl.check_request(&ip, None, Some("GET")), AclAction::Allow);
+    assert_eq!(acl.check_request(&ip, None, Some("POST")), AclAction::Allow);
+    assert_eq!(acl.check_request(&ip, None, Some("DELETE")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_no_method_provided_matches_all() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![make_rule_with_method(
+            AclActionConfig::Deny,
+            Some(vec!["GET".into(), "POST".into()]),
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    // When no method is provided in request, it should NOT match a method filter
+    assert_eq!(acl.check_request(&ip, None, None), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_with_ip_and_domain() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![
+            AclRuleConfig {
+                action: AclActionConfig::Deny,
+                src_ip: Some(vec!["192.168.0.0/16".into()]),
+                dst_domain: Some(vec!["blocked.com".into()]),
+                dst_port: None,
+                http_method: Some(vec!["POST".into()]),
+                auth: None,
+            }
+        ],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    
+    // All three conditions must match: IP, domain, and method
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), Some("blocked.com"), Some("POST")), AclAction::Deny);
+    // IP and domain match, but method doesn't
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), Some("blocked.com"), Some("GET")), AclAction::Allow);
+    // IP and method match, but domain doesn't
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), Some("allowed.com"), Some("POST")), AclAction::Allow);
+    // Domain and method match, but IP doesn't
+    assert_eq!(acl.check_request(&"10.0.0.1".parse().unwrap(), Some("blocked.com"), Some("POST")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_first_match_wins() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![
+            make_rule_with_method(
+                AclActionConfig::Deny,
+                Some(vec!["GET".into()]),
+            ),
+            make_rule_with_method(
+                AclActionConfig::Authenticate,
+                Some(vec!["GET".into()]),
+            ),
+        ],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    let ip: IpAddr = "1.2.3.4".parse().unwrap();
+    
+    // First rule matches GET and returns Deny
+    assert_eq!(acl.check_request(&ip, None, Some("GET")), AclAction::Deny);
+    // POST doesn't match first rule, doesn't match second rule, so default Allow
+    assert_eq!(acl.check_request(&ip, None, Some("POST")), AclAction::Allow);
+}
+
+#[test]
+fn test_http_method_with_ip_both_must_match() {
+    let config = make_config(
+        AclActionConfig::Allow,
+        vec![make_rule_with_method_and_ip(
+            AclActionConfig::Deny,
+            Some(vec!["192.168.0.0/16".into()]),
+            Some(vec!["POST".into(), "DELETE".into()]),
+        )],
+    );
+    let acl = AccessController::from_config(&config).unwrap();
+    
+    // Both IP and method match
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), None, Some("POST")), AclAction::Deny);
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), None, Some("DELETE")), AclAction::Deny);
+    // IP matches but method doesn't
+    assert_eq!(acl.check_request(&"192.168.1.1".parse().unwrap(), None, Some("GET")), AclAction::Allow);
+    // Method matches but IP doesn't
+    assert_eq!(acl.check_request(&"10.0.0.1".parse().unwrap(), None, Some("POST")), AclAction::Allow);
 }

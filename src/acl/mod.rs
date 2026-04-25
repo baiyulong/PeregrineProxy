@@ -4,6 +4,7 @@ pub mod auth;
 pub mod domain_filter;
 
 use std::net::IpAddr;
+use std::collections::HashSet;
 use rule::{AclAction, AclRule};
 use domain_filter::DomainFilter;
 use crate::config::{AccessControlConfig, UserCredential};
@@ -48,6 +49,16 @@ impl AccessController {
                 None
             };
 
+            let http_methods = if let Some(ref methods) = rule_cfg.http_method {
+                let mut method_set = HashSet::new();
+                for method in methods {
+                    method_set.insert(method.to_uppercase());
+                }
+                Some(method_set)
+            } else {
+                None
+            };
+
             let auth_users = if let Some(ref auth) = rule_cfg.auth {
                 if auth.auth_type == "basic" {
                     auth.users.clone()
@@ -58,21 +69,26 @@ impl AccessController {
                 None
             };
             
-            rules.push(AclRule { action, src_ip, dst_domain, auth_users });
+            rules.push(AclRule { action, src_ip, dst_domain, http_methods, auth_users });
         }
         
         Ok(Self { default_action, rules })
     }
     
-    /// Check access with both IP and domain filtering
-    /// This is the main method that evaluates all ACL rules
-    pub fn check_access(&self, src_ip: &IpAddr, dst_domain: Option<&str>) -> AclAction {
+    /// Check access with IP, domain, and HTTP method filtering
+    pub fn check_request(&self, src_ip: &IpAddr, dst_domain: Option<&str>, method: Option<&str>) -> AclAction {
         for rule in &self.rules {
-            if self.rule_matches(rule, src_ip, dst_domain) {
+            if self.rule_matches_full(rule, src_ip, dst_domain, method) {
                 return rule.action.clone();
             }
         }
         self.default_action.clone()
+    }
+    
+    /// Check access with both IP and domain filtering
+    /// This is the main method that evaluates all ACL rules
+    pub fn check_access(&self, src_ip: &IpAddr, dst_domain: Option<&str>) -> AclAction {
+        self.check_request(src_ip, dst_domain, None)
     }
     
     /// Check if a connection from the given source IP is allowed (backward compatibility)
@@ -101,6 +117,28 @@ impl AccessController {
         } else {
             None
         }
+    }
+
+    /// Check if a rule matches the given IP, domain, and method
+    fn rule_matches_full(&self, rule: &AclRule, src_ip: &IpAddr, dst_domain: Option<&str>, method: Option<&str>) -> bool {
+        // All conditions in a rule must match for the rule to apply (AND logic)
+        
+        // Check IP filter
+        if !self.rule_matches_ip(rule, src_ip) {
+            return false;
+        }
+        
+        // Check domain filter
+        if !self.rule_matches_domain(rule, dst_domain) {
+            return false;
+        }
+        
+        // Check method filter
+        if !self.rule_matches_method(rule, method) {
+            return false;
+        }
+        
+        true
     }
 
     /// Check if a rule matches the given IP and domain
@@ -140,6 +178,23 @@ impl AccessController {
             }
             (None, _) => {
                 // Rule has no domain filter = matches all domains (or no domain)
+                true
+            }
+        }
+    }
+
+    fn rule_matches_method(&self, rule: &AclRule, method: Option<&str>) -> bool {
+        match (&rule.http_methods, method) {
+            (Some(methods), Some(m)) => {
+                // Rule has method filter and we have a method to check
+                methods.contains(&m.to_uppercase())
+            }
+            (Some(_), None) => {
+                // Rule has method filter but no method provided = no match
+                false
+            }
+            (None, _) => {
+                // Rule has no method filter = matches all methods (or no method)
                 true
             }
         }
