@@ -1,3 +1,4 @@
+use clap::Parser;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -104,6 +105,22 @@ pub struct LoggingConfig {
 pub struct MetricsConfig {
     pub enabled: bool,
     pub listen: String,
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "peregrine", about = "High-performance lightweight proxy server")]
+pub struct CliArgs {
+    /// Path to configuration file
+    #[arg(short, long, default_value = "config.yaml")]
+    pub config: String,
+
+    /// Override listen address
+    #[arg(short, long)]
+    pub listen: Option<String>,
+
+    /// Override log level
+    #[arg(long)]
+    pub log_level: Option<String>,
 }
 
 impl AppConfig {
