@@ -1,0 +1,102 @@
+# Peregrine Proxy Server Configuration Example
+# This file demonstrates all supported configuration options
+
+# Server configuration
+server:
+  # Listen addresses - supports multiple protocols
+  listen:
+    - addr: "0.0.0.0:8080"
+      protocol: http
+      # Optional TLS configuration
+      # tls:
+      #   cert: "/path/to/cert.pem"
+      #   key: "/path/to/key.pem"
+    - addr: "0.0.0.0:1080"
+      protocol: socks5
+  
+  # Connection management (all optional)
+  max_connections: 10000
+  tcp_keepalive: 60        # seconds
+  connect_timeout: 10      # seconds
+  read_timeout: 30         # seconds
+  write_timeout: 30        # seconds
+
+# Access control configuration
+access_control:
+  # Default action for requests that don't match any rules
+  default_action: deny  # allow, deny, or authenticate
+  
+  # Access control rules (processed in order)
+  rules:
+    # Allow local networks
+    - action: allow
+      src_ip: 
+        - "192.168.0.0/16"
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+        - "127.0.0.1/32"
+    
+    # Block specific domains
+    - action: deny
+      dst_domain: 
+        - "*.blocked.com"
+        - "malware.example.org"
+    
+    # Block specific ports
+    - action: deny
+      dst_port: 
+        - "22"
+        - "3389"
+    
+    # Require authentication for external access
+    - action: authenticate
+      src_ip: ["0.0.0.0/0"]
+      auth:
+        type: basic
+        users:
+          - username: admin
+            password: secret123
+          - username: user
+            password: password
+    
+    # Method-specific rules for HTTP
+    - action: deny
+      http_method: ["DELETE", "PUT"]
+
+# Upstream proxy configuration
+upstream:
+  # Direct connection (no upstream proxy)
+  type: direct
+  
+  # HTTP upstream proxy
+  # type: http
+  # addr: "parent-proxy.example.com:3128"
+  # auth:
+  #   username: proxyuser
+  #   password: proxypass
+  
+  # SOCKS5 upstream proxy
+  # type: socks5
+  # addr: "socks-proxy.example.com:1080"
+  # auth:
+  #   username: socksuser
+  #   password: sockspass
+  
+  # Proxy chain (multiple upstreams)
+  # type: chain
+  # chain:
+  #   - type: http
+  #     addr: "first-proxy.example.com:3128"
+  #   - type: socks5
+  #     addr: "second-proxy.example.com:1080"
+
+# Logging configuration
+logging:
+  level: info              # trace, debug, info, warn, error
+  access_log: "./access.log"  # Optional access log file
+  format: json            # json or text (optional, defaults to text)
+
+# Metrics configuration (optional)
+metrics:
+  enabled: true
+  listen: "127.0.0.1:9090"  # Prometheus metrics endpoint
