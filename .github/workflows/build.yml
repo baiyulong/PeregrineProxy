@@ -140,6 +140,13 @@ jobs:
           $securePwd = ConvertTo-SecureString $env:CERT_PASSWORD -AsPlainText -Force
           $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePwd
 
+          # Self-signed certs must be trusted locally before signing succeeds.
+          # Add to LocalMachine\Root so the chain validates on this runner.
+          $rootStore = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "LocalMachine")
+          $rootStore.Open("ReadWrite")
+          $rootStore.Add($cert)
+          $rootStore.Close()
+
           # Sign with SHA256 and a public timestamp server
           $exePath = "${{ steps.prepare.outputs.binary_path }}"
           $result = Set-AuthenticodeSignature `
@@ -147,6 +154,11 @@ jobs:
             -Certificate $cert `
             -TimestampServer "http://timestamp.digicert.com" `
             -HashAlgorithm SHA256
+
+          # Remove from trusted root (cleanup — runner is ephemeral anyway)
+          $rootStore.Open("ReadWrite")
+          $rootStore.Remove($cert)
+          $rootStore.Close()
 
           Remove-Item $pfxPath -Force
 
