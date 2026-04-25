@@ -6,7 +6,7 @@ pub mod domain_filter;
 use std::net::IpAddr;
 use rule::{AclAction, AclRule};
 use domain_filter::DomainFilter;
-use crate::config::AccessControlConfig;
+use crate::config::{AccessControlConfig, UserCredential};
 
 pub struct AccessController {
     default_action: AclAction,
@@ -47,8 +47,18 @@ impl AccessController {
             } else {
                 None
             };
+
+            let auth_users = if let Some(ref auth) = rule_cfg.auth {
+                if auth.auth_type == "basic" {
+                    auth.users.clone()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             
-            rules.push(AclRule { action, src_ip, dst_domain });
+            rules.push(AclRule { action, src_ip, dst_domain, auth_users });
         }
         
         Ok(Self { default_action, rules })
@@ -70,6 +80,29 @@ impl AccessController {
         self.check_access(src_ip, None)
     }
     
+    /// Get auth users for the first matching rule that returns Authenticate action
+    /// Returns None if no matching rule has Authenticate action or auth users configured
+    pub fn get_auth_users_for_rule(&self, src_ip: &IpAddr, dst_domain: Option<&str>) -> Option<&[UserCredential]> {
+        for rule in &self.rules {
+            if self.rule_matches(rule, src_ip, dst_domain) {
+                if rule.action == AclAction::Authenticate {
+                    return rule.auth_users.as_ref().map(|users| users.as_slice());
+                }
+                // If rule matches but action is not Authenticate, no auth needed
+                return None;
+            }
+        }
+        
+        // Check default action
+        if self.default_action == AclAction::Authenticate {
+            // For default Authenticate action, we don't have users configured
+            // This would be a configuration error, but return empty slice
+            Some(&[])
+        } else {
+            None
+        }
+    }
+
     /// Check if a rule matches the given IP and domain
     fn rule_matches(&self, rule: &AclRule, src_ip: &IpAddr, dst_domain: Option<&str>) -> bool {
         // All conditions in a rule must match for the rule to apply (AND logic)

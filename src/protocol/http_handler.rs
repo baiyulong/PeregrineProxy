@@ -7,6 +7,8 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use crate::upstream::direct::DirectConnector;
 use crate::upstream::{ConnectTarget, UpstreamConnector};
+use crate::config::UserCredential;
+use crate::acl::auth;
 
 pub async fn handle_http(stream: TcpStream) {
     let io = TokioIo::new(stream);
@@ -177,4 +179,38 @@ fn parse_host_port(authority: &str) -> Option<(String, u16)> {
     } else {
         None
     }
+}
+
+/// Check Proxy-Authorization header and verify credentials
+/// Returns true if credentials are valid, false otherwise
+pub fn check_proxy_auth<T>(req: &Request<T>, users: &[UserCredential]) -> bool {
+    // Look for Proxy-Authorization header
+    let auth_header = match req.headers().get("proxy-authorization") {
+        Some(header_value) => header_value,
+        None => return false, // No auth header provided
+    };
+    
+    // Convert header value to string
+    let auth_str = match auth_header.to_str() {
+        Ok(s) => s,
+        Err(_) => return false, // Invalid header value
+    };
+    
+    // Parse Basic Auth
+    let (username, password) = match auth::parse_basic_auth(auth_str) {
+        Some(credentials) => credentials,
+        None => return false, // Invalid Basic Auth format
+    };
+    
+    // Verify credentials
+    auth::verify_credentials(&username, &password, users)
+}
+
+/// Create 407 Proxy Authentication Required response
+pub fn make_407_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+        .header("Proxy-Authenticate", "Basic realm=\"Peregrine Proxy\"")
+        .body(Full::new(Bytes::from("Proxy Authentication Required")))
+        .unwrap()
 }

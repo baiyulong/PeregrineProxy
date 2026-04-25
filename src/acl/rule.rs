@@ -1,5 +1,6 @@
 use ipnet::IpNet;
 use crate::acl::domain_filter::DomainFilter;
+use crate::config::UserCredential;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AclAction {
@@ -13,5 +14,6 @@ pub struct AclRule {
     pub action: AclAction,
     pub src_ip: Option<Vec<IpNet>>,
     pub dst_domain: Option<DomainFilter>,
+    pub auth_users: Option<Vec<UserCredential>>,
     // http_method filter will be added in Task 21
 }
