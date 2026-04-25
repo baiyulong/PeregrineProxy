@@ -1,0 +1,117 @@
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use crate::error::{ProxyError, ProxyResult};
+
+pub enum SocksCommand {
+    Connect,
+    Bind,
+    UdpAssociate,
+}
+
+pub enum TargetAddr {
+    Ipv4([u8; 4], u16),
+    Domain(String, u16),
+    Ipv6([u8; 16], u16),
+}
+
+pub struct SocksRequest {
+    pub command: SocksCommand,
+    pub target: TargetAddr,
+}
+
+/// Phase 1: Negotiate authentication method
+pub async fn negotiate_method(stream: &mut TcpStream) -> ProxyResult<u8> {
+    // Read: VER | NMETHODS | METHODS...
+    let mut header = [0u8; 2];
+    stream.read_exact(&mut header).await.map_err(ProxyError::Io)?;
+    
+    if header[0] != 0x05 {
+        return Err(ProxyError::Socks5("Invalid SOCKS version".into()));
+    }
+    
+    let nmethods = header[1] as usize;
+    let mut methods = vec![0u8; nmethods];
+    stream.read_exact(&mut methods).await.map_err(ProxyError::Io)?;
+    
+    // Check if no-auth (0x00) is supported
+    let selected = if methods.contains(&0x00) {
+        0x00 // No authentication
+    } else {
+        0xFF // No acceptable methods
+    };
+    
+    // Reply: VER | METHOD
+    stream.write_all(&[0x05, selected]).await.map_err(ProxyError::Io)?;
+    
+    if selected == 0xFF {
+        return Err(ProxyError::Socks5("No acceptable authentication method".into()));
+    }
+    
+    Ok(selected)
+}
+
+/// Phase 2: Read SOCKS5 request
+pub async fn read_request(stream: &mut TcpStream) -> ProxyResult<SocksRequest> {
+    // Read: VER | CMD | RSV | ATYP
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header).await.map_err(ProxyError::Io)?;
+    
+    if header[0] != 0x05 {
+        return Err(ProxyError::Socks5("Invalid SOCKS version in request".into()));
+    }
+    
+    let command = match header[1] {
+        0x01 => SocksCommand::Connect,
+        0x02 => SocksCommand::Bind,
+        0x03 => SocksCommand::UdpAssociate,
+        _ => return Err(ProxyError::Socks5(format!("Unknown command: {}", header[1]))),
+    };
+    
+    // Parse address based on ATYP
+    let target = match header[3] {
+        0x01 => { // IPv4
+            let mut addr = [0u8; 4];
+            stream.read_exact(&mut addr).await.map_err(ProxyError::Io)?;
+            let mut port_buf = [0u8; 2];
+            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            let port = u16::from_be_bytes(port_buf);
+            TargetAddr::Ipv4(addr, port)
+        }
+        0x03 => { // Domain
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await.map_err(ProxyError::Io)?;
+            let mut domain = vec![0u8; len[0] as usize];
+            stream.read_exact(&mut domain).await.map_err(ProxyError::Io)?;
+            let mut port_buf = [0u8; 2];
+            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            let port = u16::from_be_bytes(port_buf);
+            let domain_str = String::from_utf8(domain)
+                .map_err(|_| ProxyError::Socks5("Invalid domain encoding".into()))?;
+            TargetAddr::Domain(domain_str, port)
+        }
+        0x04 => { // IPv6
+            let mut addr = [0u8; 16];
+            stream.read_exact(&mut addr).await.map_err(ProxyError::Io)?;
+            let mut port_buf = [0u8; 2];
+            stream.read_exact(&mut port_buf).await.map_err(ProxyError::Io)?;
+            let port = u16::from_be_bytes(port_buf);
+            TargetAddr::Ipv6(addr, port)
+        }
+        _ => return Err(ProxyError::Socks5(format!("Unknown address type: {}", header[3]))),
+    };
+    
+    Ok(SocksRequest { command, target })
+}
+
+/// Send SOCKS5 reply
+pub async fn send_reply(stream: &mut TcpStream, rep: u8, _request: &SocksRequest) -> ProxyResult<()> {
+    // Reply: VER | REP | RSV | ATYP | BND.ADDR | BND.PORT
+    // Use 0.0.0.0:0 as bind address
+    let reply = [
+        0x05, rep, 0x00, 0x01, // VER, REP, RSV, ATYP (IPv4)
+        0x00, 0x00, 0x00, 0x00, // BND.ADDR (0.0.0.0)
+        0x00, 0x00, // BND.PORT (0)
+    ];
+    stream.write_all(&reply).await.map_err(ProxyError::Io)?;
+    Ok(())
+}

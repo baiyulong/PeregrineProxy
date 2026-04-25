@@ -4,6 +4,7 @@ use tokio::sync::Semaphore;
 use crate::config::AppConfig;
 use crate::protocol::detect::{detect_protocol, DetectedProtocol};
 use crate::protocol::http_handler;
+use crate::protocol::socks5;
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let max_conn = config.server.max_connections.unwrap_or(10000);
@@ -84,7 +85,7 @@ async fn handle_connection(stream: tokio::net::TcpStream, addr: std::net::Socket
         }
         DetectedProtocol::Socks5 => {
             tracing::debug!("SOCKS5 protocol detected from {}", addr);
-            // TODO: handle_socks5(stream).await (Task 8)
+            socks5::handle_socks5(stream, addr).await;
         }
         DetectedProtocol::Unknown => {
             tracing::warn!("Unknown protocol from {}, closing connection", addr);
