@@ -12,29 +12,28 @@ pub async fn handle_http(stream: TcpStream) {
     let io = TokioIo::new(stream);
     
     let service = hyper::service::service_fn(|req: Request<Incoming>| async move {
-        proxy_request(req).await
+        if req.method() == Method::CONNECT {
+            handle_connect(req).await
+        } else {
+            proxy_request(req).await
+        }
     });
     
     if let Err(e) = http1::Builder::new()
         .preserve_header_case(true)
         .title_case_headers(true)
         .serve_connection(io, service)
+        .with_upgrades()  // IMPORTANT: enable upgrades for CONNECT
         .await
     {
-        tracing::error!("HTTP connection error: {}", e);
+        // Don't log "connection closed" as an error
+        if !e.to_string().contains("connection closed") {
+            tracing::error!("HTTP connection error: {}", e);
+        }
     }
 }
 
 async fn proxy_request(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
-    // For CONNECT, return 405 for now (Task 7)
-    if req.method() == Method::CONNECT {
-        let resp = Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .body(Full::new(Bytes::from("CONNECT not yet supported")))
-            .unwrap();
-        return Ok(resp);
-    }
-    
     // Parse target from absolute URI
     let uri = req.uri().clone();
     let host = match uri.host() {
@@ -120,4 +119,62 @@ fn is_hop_by_hop(header: &str) -> bool {
             | "keep-alive"
             | "connection"
     )
+}
+
+async fn handle_connect(req: Request<Incoming>) -> Result<Response<Full<Bytes>>, hyper::Error> {
+    // Extract target host:port from the CONNECT request URI
+    let target = req.uri().authority()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    
+    let (host, port) = parse_host_port(&target).unwrap_or((target.clone(), 443));
+    
+    tracing::info!("CONNECT tunnel to {}:{}", host, port);
+    
+    // Spawn a task to handle the tunnel after the upgrade completes
+    tokio::spawn(async move {
+        match hyper::upgrade::on(req).await {
+            Ok(upgraded) => {
+                let mut upgraded = TokioIo::new(upgraded);
+                
+                // Connect to target
+                let connector = DirectConnector;
+                match connector.connect(&ConnectTarget::Address(host.clone(), port)).await {
+                    Ok(mut target_stream) => {
+                        // Bidirectional copy
+                        match tokio::io::copy_bidirectional(&mut upgraded, &mut target_stream).await {
+                            Ok((from_client, from_server)) => {
+                                tracing::debug!(
+                                    "CONNECT tunnel closed: {} bytes from client, {} bytes from server",
+                                    from_client, from_server
+                                );
+                            }
+                            Err(e) => {
+                                tracing::debug!("CONNECT tunnel error: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to connect to {}:{}: {}", host, port, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Upgrade failed: {}", e);
+            }
+        }
+    });
+    
+    // Return 200 to signal tunnel is established
+    Ok(Response::new(Full::new(Bytes::new())))
+}
+
+fn parse_host_port(authority: &str) -> Option<(String, u16)> {
+    if let Some(colon_pos) = authority.rfind(':') {
+        let host = &authority[..colon_pos];
+        let port = authority[colon_pos + 1..].parse::<u16>().ok()?;
+        Some((host.to_string(), port))
+    } else {
+        None
+    }
 }
