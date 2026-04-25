@@ -115,7 +115,7 @@ async fn test_direct_connector() {
 #[tokio::test]
 async fn test_upstream_router_direct() {
     use peregrine::upstream::UpstreamRouter;
-    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::upstream::ConnectTarget;
     use peregrine::config::UpstreamConfig;
     
     let echo_addr = start_echo_server().await;
@@ -136,7 +136,7 @@ async fn test_upstream_router_direct() {
 #[tokio::test]
 async fn test_upstream_router_http_proxy() {
     use peregrine::upstream::UpstreamRouter;
-    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::upstream::ConnectTarget;
     use peregrine::config::UpstreamConfig;
     
     let echo_addr = start_echo_server().await;
@@ -205,7 +205,7 @@ async fn test_socks5_proxy_connector() {
 #[tokio::test]
 async fn test_upstream_router_socks5() {
     use peregrine::upstream::UpstreamRouter;
-    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::upstream::ConnectTarget;
     use peregrine::config::UpstreamConfig;
     
     let echo_addr = start_echo_server().await;
@@ -231,7 +231,7 @@ async fn test_upstream_router_socks5() {
 #[tokio::test]
 async fn test_upstream_router_chain() {
     use peregrine::upstream::UpstreamRouter;
-    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::upstream::ConnectTarget;
     use peregrine::config::UpstreamConfig;
     
     let echo_addr = start_echo_server().await;

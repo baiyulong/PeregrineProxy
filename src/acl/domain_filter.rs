@@ -23,9 +23,7 @@ impl DomainFilter {
         let mut has_globs = false;
 
         for pattern in patterns {
-            if pattern.starts_with('~') {
-                // Regex pattern (remove the ~ prefix)
-                let regex_pattern = &pattern[1..];
+            if let Some(regex_pattern) = pattern.strip_prefix('~') {
                 regex_patterns.push(regex_pattern);
             } else if pattern.contains('*') || pattern.contains('?') {
                 // Glob pattern

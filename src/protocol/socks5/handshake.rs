@@ -46,7 +46,7 @@ pub async fn negotiate_method(stream: &mut TcpStream, users: Option<&[UserCreden
         .map_err(ProxyError::Io)?;
     
     // Choose method based on configuration
-    let selected = if let Some(_) = users {
+    let selected = if users.is_some() {
         // Users are configured, prefer username/password authentication
         if methods.contains(&0x02) {
             0x02 // Username/password authentication

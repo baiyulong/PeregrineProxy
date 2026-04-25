@@ -58,14 +58,8 @@ async fn start_udp_echo_server() -> std::net::SocketAddr {
     
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
-        loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((n, from)) => {
-                    // Echo the data back
-                    let _ = socket.send_to(&buf[..n], from).await;
-                }
-                Err(_) => break,
-            }
+        while let Ok((n, from)) = socket.recv_from(&mut buf).await {
+            let _ = socket.send_to(&buf[..n], from).await;
         }
     });
     

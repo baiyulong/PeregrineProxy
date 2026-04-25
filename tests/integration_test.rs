@@ -1,4 +1,3 @@
-use std::net::{SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::Duration;
@@ -23,7 +22,7 @@ async fn test_integration_acl_deny_blocks_connection() {
             if client_addr.ip().is_loopback() {
                 // Send 403 Forbidden for HTTP requests
                 let mut buf = vec![0u8; 4096];
-                if let Ok(_) = stream.read(&mut buf).await {
+                if stream.read(&mut buf).await.is_ok() {
                     let request = String::from_utf8_lossy(&buf);
                     if request.starts_with("GET") || request.starts_with("POST") {
                         let response = "HTTP/1.1 403 Forbidden\r\n\
@@ -102,7 +101,7 @@ async fn test_integration_proxy_auth_challenge() {
     tokio::spawn(async move {
         if let Ok((mut stream, _)) = proxy_listener.accept().await {
             let mut buf = vec![0u8; 4096];
-            if let Ok(_) = stream.read(&mut buf).await {
+            if stream.read(&mut buf).await.is_ok() {
                 let request = String::from_utf8_lossy(&buf);
                 
                 // Check for Proxy-Authorization header
@@ -276,22 +275,19 @@ async fn test_integration_concurrent_connections() {
     
     for i in 0..5 {
         let task = tokio::spawn(async move {
-            match tokio::time::timeout(
+            if let Ok(Ok(mut tunnel)) = tokio::time::timeout(
                 Duration::from_secs(5),
                 common::socks5_connect_through_proxy(proxy_addr, "127.0.0.1", target_addr.port())
             ).await {
-                Ok(Ok(mut tunnel)) => {
-                    let test_data = format!("Concurrent test {}", i);
-                    if tunnel.write_all(test_data.as_bytes()).await.is_ok() {
-                        let mut echo = vec![0u8; 4096];
-                        if let Ok(n) = tunnel.read(&mut echo).await {
-                            if &echo[..n] == test_data.as_bytes() {
-                                return true;
-                            }
+                let test_data = format!("Concurrent test {}", i);
+                if tunnel.write_all(test_data.as_bytes()).await.is_ok() {
+                    let mut echo = vec![0u8; 4096];
+                    if let Ok(n) = tunnel.read(&mut echo).await {
+                        if &echo[..n] == test_data.as_bytes() {
+                            return true;
                         }
                     }
                 }
-                _ => {}
             }
             false
         });

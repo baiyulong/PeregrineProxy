@@ -1,5 +1,5 @@
-use std::net::{SocketAddr, IpAddr, Ipv4Addr};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use std::net::{SocketAddr, Ipv4Addr};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ pub async fn start_mock_http_server() -> (SocketAddr, tokio::task::JoinHandle<()
             if let Ok((mut stream, _)) = listener.accept().await {
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 4096];
-                    if let Ok(_) = stream.read(&mut buf).await {
+                    if stream.read(&mut buf).await.is_ok() {
                         let response = "HTTP/1.1 200 OK\r\nContent-Length: 21\r\nConnection: close\r\n\r\nHello from mock server";
                         let _ = stream.write_all(response.as_bytes()).await;
                     }
@@ -93,9 +93,8 @@ pub async fn start_mock_http_proxy() -> (SocketAddr, tokio::task::JoinHandle<()>
                             // Extract URL from request line
                             if let Some(first_line) = request.lines().next() {
                                 if let Some(url_part) = first_line.split_whitespace().nth(1) {
-                                    if url_part.starts_with("http://") {
+                                    if let Some(url_without_scheme) = url_part.strip_prefix("http://") {
                                         // Parse target host and port
-                                        let url_without_scheme = &url_part[7..];
                                         let mut parts = url_without_scheme.split('/');
                                         if let Some(host_port) = parts.next() {
                                             let target = if host_port.contains(':') {
@@ -251,8 +250,7 @@ pub async fn connect_tunnel_through_proxy(
     if response_str.contains("200") {
         Ok(stream)
     } else {
-        Err(tokio::io::Error::new(
-            tokio::io::ErrorKind::Other,
+        Err(tokio::io::Error::other(
             format!("CONNECT failed: {}", response_str)
         ))
     }
@@ -274,8 +272,7 @@ pub async fn socks5_connect_through_proxy(
         .await??;
     
     if resp != [0x05, 0x00] {
-        return Err(tokio::io::Error::new(
-            tokio::io::ErrorKind::Other,
+        return Err(tokio::io::Error::other(
             "SOCKS5 method negotiation failed"
         ));
     }
@@ -295,8 +292,7 @@ pub async fn socks5_connect_through_proxy(
         .await??;
     
     if reply[0] != 0x05 || reply[1] != 0x00 {
-        return Err(tokio::io::Error::new(
-            tokio::io::ErrorKind::Other,
+        return Err(tokio::io::Error::other(
             format!("SOCKS5 CONNECT failed: reply[1]={}", reply[1])
         ));
     }

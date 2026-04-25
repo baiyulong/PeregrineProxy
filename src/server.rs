@@ -20,7 +20,7 @@ use tokio::signal::unix::{signal, SignalKind};
 /// A stream that can be either plain TCP or TLS-wrapped
 pub enum ProxyStream {
     Plain(TcpStream),
-    Tls(TlsStream<TcpStream>),
+    Tls(Box<TlsStream<TcpStream>>),
 }
 
 impl AsyncRead for ProxyStream {
@@ -106,7 +106,7 @@ fn load_tls_acceptor(config: &TlsConfig) -> anyhow::Result<TlsAcceptor> {
     
     let server_config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key.into())
+        .with_single_cert(certs, key)
         .map_err(|e| anyhow::anyhow!("Failed to build TLS config: {}", e))?;
     
     Ok(TlsAcceptor::from(Arc::new(server_config)))
@@ -239,7 +239,7 @@ async fn accept_loop(listener: TcpListener, tls_acceptor: Option<TlsAcceptor>, s
                                             match acceptor.accept(stream).await {
                                                 Ok(tls_stream) => {
                                                     tracing::debug!("TLS handshake completed for {}", addr);
-                                                    ProxyStream::Tls(tls_stream)
+                                                    ProxyStream::Tls(Box::new(tls_stream))
                                                 }
                                                 Err(e) => {
                                                     tracing::error!("TLS handshake failed for {}: {}", addr, e);

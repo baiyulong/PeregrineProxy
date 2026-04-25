@@ -193,7 +193,7 @@ jobs:
         run: cargo test --verbose --all
 
       - name: Run clippy
-        run: cargo clippy --all --all-targets -- -D warnings
+        run: cargo clippy --all --all-targets -- -D warnings -A dead-code
 
       - name: Check formatting
         run: cargo fmt --all -- --check

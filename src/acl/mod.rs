@@ -102,7 +102,7 @@ impl AccessController {
         for rule in &self.rules {
             if self.rule_matches(rule, src_ip, dst_domain) {
                 if rule.action == AclAction::Authenticate {
-                    return rule.auth_users.as_ref().map(|users| users.as_slice());
+                    return rule.auth_users.as_deref();
                 }
                 // If rule matches but action is not Authenticate, no auth needed
                 return None;

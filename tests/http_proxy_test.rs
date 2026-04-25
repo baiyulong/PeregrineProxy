@@ -193,7 +193,7 @@ async fn test_http_proxy_with_authentication_required() {
         // Simulate auth-required proxy behavior by manually handling the request
         let mut stream = stream;
         let mut buf = vec![0u8; 4096];
-        if let Ok(_) = stream.read(&mut buf).await {
+        if stream.read(&mut buf).await.is_ok() {
             let response = "HTTP/1.1 407 Proxy Authentication Required\r\n\
                            Proxy-Authenticate: Basic realm=\"proxy\"\r\n\
                            Content-Length: 0\r\n\r\n";
