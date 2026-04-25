@@ -119,6 +119,44 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: strip "${{ steps.prepare.outputs.binary_path }}" || true
 
+      - name: Sign Windows executable
+        if: matrix.os == 'windows-latest'
+        env:
+          CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+        shell: powershell
+        run: |
+          if (-not $env:CERT_BASE64) {
+            Write-Host "No signing certificate configured, skipping code signing."
+            Write-Host "To enable: add WINDOWS_SIGNING_CERT_BASE64 and WINDOWS_SIGNING_CERT_PASSWORD secrets."
+            exit 0
+          }
+
+          # Decode PFX from base64 secret
+          $pfxPath = Join-Path $env:TEMP "peregrine_sign.pfx"
+          [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($env:CERT_BASE64))
+
+          # Import certificate into current user store
+          $securePwd = ConvertTo-SecureString $env:CERT_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation "Cert:\CurrentUser\My" -Password $securePwd
+
+          # Sign with SHA256 and a public timestamp server
+          $exePath = "${{ steps.prepare.outputs.binary_path }}"
+          $result = Set-AuthenticodeSignature `
+            -FilePath $exePath `
+            -Certificate $cert `
+            -TimestampServer "http://timestamp.digicert.com" `
+            -HashAlgorithm SHA256
+
+          Remove-Item $pfxPath -Force
+
+          if ($result.Status -ne "Valid") {
+            Write-Error "Code signing failed: $($result.StatusMessage)"
+            exit 1
+          }
+          Write-Host "Signed successfully: $exePath (cert: $($cert.Subject))"
+
+
       - name: Create distribution archive
         shell: bash
         run: |
