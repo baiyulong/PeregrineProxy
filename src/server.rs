@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use crate::config::AppConfig;
+use crate::protocol::detect::{detect_protocol, DetectedProtocol};
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let max_conn = config.server.max_connections.unwrap_or(10000);
@@ -61,9 +62,33 @@ async fn accept_loop(listener: TcpListener, semaphore: Arc<Semaphore>) {
     }
 }
 
-async fn handle_connection(mut _stream: tokio::net::TcpStream, addr: std::net::SocketAddr) {
-    tracing::debug!("Handling connection from {} (protocol detection not yet implemented)", addr);
-    // Connection will be closed when stream is dropped
+async fn handle_connection(stream: tokio::net::TcpStream, addr: std::net::SocketAddr) {
+    let mut buf = [0u8; 8];
+    match stream.peek(&mut buf).await {
+        Ok(0) => {
+            tracing::debug!("Connection from {} closed before sending data", addr);
+            return;
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!("Failed to peek from {}: {}", addr, e);
+            return;
+        }
+    }
+    
+    match detect_protocol(&buf) {
+        DetectedProtocol::Http => {
+            tracing::debug!("HTTP protocol detected from {}", addr);
+            // TODO: handle_http(stream).await (Task 6)
+        }
+        DetectedProtocol::Socks5 => {
+            tracing::debug!("SOCKS5 protocol detected from {}", addr);
+            // TODO: handle_socks5(stream).await (Task 8)
+        }
+        DetectedProtocol::Unknown => {
+            tracing::warn!("Unknown protocol from {}, closing connection", addr);
+        }
+    }
 }
 
 fn protocol_name(protocol: &crate::config::Protocol) -> &'static str {

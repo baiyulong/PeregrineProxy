@@ -1,5 +1,6 @@
 pub mod config;
 mod error;
+mod protocol;
 mod server;
 
 use clap::Parser;
