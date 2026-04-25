@@ -3,6 +3,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use crate::config::AppConfig;
 use crate::protocol::detect::{detect_protocol, DetectedProtocol};
+use crate::protocol::http_handler;
 
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     let max_conn = config.server.max_connections.unwrap_or(10000);
@@ -79,7 +80,7 @@ async fn handle_connection(stream: tokio::net::TcpStream, addr: std::net::Socket
     match detect_protocol(&buf) {
         DetectedProtocol::Http => {
             tracing::debug!("HTTP protocol detected from {}", addr);
-            // TODO: handle_http(stream).await (Task 6)
+            http_handler::handle_http(stream).await;
         }
         DetectedProtocol::Socks5 => {
             tracing::debug!("SOCKS5 protocol detected from {}", addr);

@@ -2,6 +2,7 @@ pub mod config;
 mod error;
 mod protocol;
 mod server;
+mod upstream;
 
 use clap::Parser;
 use config::{AppConfig, CliArgs};
