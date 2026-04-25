@@ -1,20 +1,45 @@
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use crate::upstream::{ConnectTarget, UpstreamConnector};
+use crate::upstream::{ConnectTarget, UpstreamConnector, BoxedStream, wrap_tls, extract_host};
 use crate::error::{ProxyError, ProxyResult};
 use crate::config::UserCredential;
 
 pub struct Socks5ProxyConnector {
     pub proxy_addr: String,
     pub auth: Option<UserCredential>,
+    pub use_tls: bool,
 }
 
 #[async_trait]
 impl UpstreamConnector for Socks5ProxyConnector {
-    async fn connect(&self, target: &ConnectTarget) -> ProxyResult<TcpStream> {
-        let mut stream = TcpStream::connect(&self.proxy_addr).await
+    async fn connect(&self, target: &ConnectTarget) -> ProxyResult<BoxedStream> {
+        let stream = TcpStream::connect(&self.proxy_addr).await
             .map_err(|e| ProxyError::Upstream(format!("Failed to connect to SOCKS5 proxy {}: {}", self.proxy_addr, e)))?;
+        
+        if self.use_tls {
+            let host = extract_host(&self.proxy_addr);
+            let tls_stream = wrap_tls(stream, &host).await?;
+            let mut tls_stream = Box::pin(tls_stream);
+            
+            // Perform SOCKS5 handshake through TLS
+            self.perform_socks5_handshake(&mut tls_stream, target).await?;
+            Ok(tls_stream as BoxedStream)
+        } else {
+            let mut stream = stream;
+            
+            // Perform SOCKS5 handshake on plain TCP
+            self.perform_socks5_handshake(&mut stream, target).await?;
+            Ok(Box::pin(stream) as BoxedStream)
+        }
+    }
+}
+
+impl Socks5ProxyConnector {
+    async fn perform_socks5_handshake<S>(&self, stream: &mut S, target: &ConnectTarget) -> ProxyResult<()>
+    where
+        S: AsyncReadExt + AsyncWriteExt + Unpin,
+    {
         
         // Phase 1: Method negotiation
         let methods = if self.auth.is_some() {
@@ -116,7 +141,7 @@ impl UpstreamConnector for Socks5ProxyConnector {
                     _ => {}
                 }
                 
-                Ok(stream)
+                Ok(())
             }
         }
     }

@@ -84,10 +84,12 @@ pub enum UpstreamConfig {
     Http {
         addr: String,
         auth: Option<UserCredential>,
+        tls: Option<bool>,
     },
     Socks5 {
         addr: String,
         auth: Option<UserCredential>,
+        tls: Option<bool>,
     },
     Chain {
         chain: Vec<UpstreamConfig>,

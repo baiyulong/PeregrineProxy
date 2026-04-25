@@ -1,6 +1,94 @@
 use peregrine::config::AppConfig;
 
 #[test]
+fn test_upstream_tls_config() {
+    // Test HTTP upstream with TLS enabled
+    let yaml = r#"
+server:
+  listen:
+    - addr: "0.0.0.0:8080"
+      protocol: http
+access_control:
+  default_action: allow
+  rules: []
+upstream:
+  type: http
+  addr: "secure-proxy.example.com:443"
+  tls: true
+  auth:
+    username: user
+    password: pass
+logging:
+  level: info
+"#;
+    let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+    
+    if let peregrine::config::UpstreamConfig::Http { addr, auth, tls } = &config.upstream {
+        assert_eq!(addr, "secure-proxy.example.com:443");
+        assert_eq!(tls, &Some(true));
+        assert!(auth.is_some());
+        assert_eq!(auth.as_ref().unwrap().username, "user");
+    } else {
+        panic!("Expected HTTP upstream config");
+    }
+}
+
+#[test] 
+fn test_upstream_socks5_tls_config() {
+    // Test SOCKS5 upstream with TLS enabled
+    let yaml = r#"
+server:
+  listen:
+    - addr: "0.0.0.0:1080"
+      protocol: socks5
+access_control:
+  default_action: allow
+  rules: []
+upstream:
+  type: socks5
+  addr: "secure-socks.example.com:443"
+  tls: true
+logging:
+  level: info
+"#;
+    let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+    
+    if let peregrine::config::UpstreamConfig::Socks5 { addr, auth, tls } = &config.upstream {
+        assert_eq!(addr, "secure-socks.example.com:443");
+        assert_eq!(tls, &Some(true));
+        assert!(auth.is_none());
+    } else {
+        panic!("Expected SOCKS5 upstream config");
+    }
+}
+
+#[test]
+fn test_upstream_tls_default_false() {
+    // Test that TLS defaults to false when not specified
+    let yaml = r#"
+server:
+  listen:
+    - addr: "0.0.0.0:8080"
+      protocol: http
+access_control:
+  default_action: allow
+  rules: []
+upstream:
+  type: http
+  addr: "proxy.example.com:3128"
+logging:
+  level: info
+"#;
+    let config: AppConfig = serde_yaml::from_str(yaml).unwrap();
+    
+    if let peregrine::config::UpstreamConfig::Http { tls, .. } = &config.upstream {
+        assert_eq!(tls, &None);  // Should be None when not specified
+    } else {
+        panic!("Expected HTTP upstream config");
+    }
+}
+
+#[test]
 fn test_load_example_config() {
     // Test loading the example config file
     let config = AppConfig::load_from_file("config.example.yaml");

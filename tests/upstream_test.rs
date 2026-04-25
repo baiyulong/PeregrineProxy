@@ -76,6 +76,7 @@ async fn test_http_proxy_connector_connect() {
     let connector = HttpProxyConnector {
         proxy_addr: proxy_addr.to_string(),
         auth: None,
+        use_tls: false,
     };
     
     let mut stream = connector.connect(&ConnectTarget::Address(
@@ -144,6 +145,7 @@ async fn test_upstream_router_http_proxy() {
     let router = UpstreamRouter::from_config(&UpstreamConfig::Http {
         addr: proxy_addr.to_string(),
         auth: None,
+        tls: None,
     });
     let mut stream = router.connector().connect(&ConnectTarget::Address(
         "127.0.0.1".into(), echo_addr.port()
@@ -185,6 +187,7 @@ async fn test_socks5_proxy_connector() {
     let connector = Socks5ProxyConnector {
         proxy_addr: proxy_addr.to_string(),
         auth: None,
+        use_tls: false,
     };
     
     let mut stream = connector.connect(&ConnectTarget::Address(
@@ -211,6 +214,7 @@ async fn test_upstream_router_socks5() {
     let router = UpstreamRouter::from_config(&UpstreamConfig::Socks5 {
         addr: proxy_addr.to_string(),
         auth: None,
+        tls: None,
     });
     let mut stream = router.connector().connect(&ConnectTarget::Address(
         "127.0.0.1".into(), echo_addr.port()
