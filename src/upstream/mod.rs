@@ -1,17 +1,17 @@
+pub mod chain;
 pub mod direct;
 pub mod http_proxy;
 pub mod socks5_proxy;
-pub mod chain;
 
-use async_trait::async_trait;
-use tokio::net::TcpStream;
-use std::sync::Arc;
-use std::pin::Pin;
 use crate::config::UpstreamConfig;
 use crate::error::{ProxyError, ProxyResult};
-use tokio_rustls::{TlsConnector, client::TlsStream};
-use rustls::ClientConfig;
+use async_trait::async_trait;
 use rustls::pki_types::ServerName;
+use rustls::ClientConfig;
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::net::TcpStream;
+use tokio_rustls::{client::TlsStream, TlsConnector};
 
 /// Represents a target to connect to
 #[derive(Clone, Debug)]
@@ -33,11 +33,11 @@ pub fn create_tls_connector() -> TlsConnector {
     let mut root_store = rustls::RootCertStore::empty();
     // Add webpki roots (standard root certs)
     root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    
+
     let config = ClientConfig::builder()
         .with_root_certificates(root_store)
         .with_no_client_auth();
-    
+
     TlsConnector::from(Arc::new(config))
 }
 
@@ -46,7 +46,9 @@ pub async fn wrap_tls(stream: TcpStream, host: &str) -> ProxyResult<TlsStream<Tc
     let connector = create_tls_connector();
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|_| ProxyError::Upstream(format!("Invalid TLS server name: {}", host)))?;
-    connector.connect(server_name, stream).await
+    connector
+        .connect(server_name, stream)
+        .await
         .map_err(|e| ProxyError::Upstream(format!("TLS handshake failed: {}", e)))
 }
 
@@ -80,19 +82,21 @@ impl UpstreamRouter {
                 auth: auth.clone(),
                 use_tls: tls.unwrap_or(false),
             }),
-            UpstreamConfig::Socks5 { addr, auth, tls } => Arc::new(socks5_proxy::Socks5ProxyConnector {
-                proxy_addr: addr.clone(),
-                auth: auth.clone(),
-                use_tls: tls.unwrap_or(false),
-            }),
+            UpstreamConfig::Socks5 { addr, auth, tls } => {
+                Arc::new(socks5_proxy::Socks5ProxyConnector {
+                    proxy_addr: addr.clone(),
+                    auth: auth.clone(),
+                    use_tls: tls.unwrap_or(false),
+                })
+            }
             UpstreamConfig::Chain { chain } => Arc::new(chain::ChainConnector {
                 chain: chain.clone(),
             }),
         };
-        
+
         Self { connector }
     }
-    
+
     pub fn connector(&self) -> &dyn UpstreamConnector {
         self.connector.as_ref()
     }

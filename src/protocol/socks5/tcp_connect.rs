@@ -1,8 +1,8 @@
-use tokio::net::TcpStream;
-use crate::protocol::socks5::handshake::{SocksRequest, TargetAddr, send_reply};
+use crate::error::ProxyResult;
+use crate::protocol::socks5::handshake::{send_reply, SocksRequest, TargetAddr};
 use crate::upstream::direct::DirectConnector;
 use crate::upstream::{ConnectTarget, UpstreamConnector};
-use crate::error::ProxyResult;
+use tokio::net::TcpStream;
 
 pub async fn handle_connect(stream: &mut TcpStream, request: &SocksRequest) -> ProxyResult<()> {
     let (host, port) = match &request.target {
@@ -16,21 +16,27 @@ pub async fn handle_connect(stream: &mut TcpStream, request: &SocksRequest) -> P
             (ip.to_string(), *port)
         }
     };
-    
+
     tracing::info!("SOCKS5 CONNECT to {}:{}", host, port);
-    
+
     let connector = DirectConnector;
-    match connector.connect(&ConnectTarget::Address(host.clone(), port)).await {
+    match connector
+        .connect(&ConnectTarget::Address(host.clone(), port))
+        .await
+    {
         Ok(mut target_stream) => {
             // Send success reply
             send_reply(stream, 0x00, request).await?;
-            
+
             // Bidirectional copy
             match tokio::io::copy_bidirectional(stream, &mut target_stream).await {
                 Ok((from_client, from_server)) => {
                     tracing::debug!(
                         "SOCKS5 tunnel to {}:{} closed: {} bytes from client, {} bytes from server",
-                        host, port, from_client, from_server
+                        host,
+                        port,
+                        from_client,
+                        from_server
                     );
                 }
                 Err(e) => {
@@ -44,6 +50,6 @@ pub async fn handle_connect(stream: &mut TcpStream, request: &SocksRequest) -> P
             send_reply(stream, 0x05, request).await?;
         }
     }
-    
+
     Ok(())
 }

@@ -1,5 +1,5 @@
-pub mod config;
 mod acl;
+pub mod config;
 mod error;
 mod logging;
 mod metrics;
