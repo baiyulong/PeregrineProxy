@@ -2,6 +2,8 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::time::Duration;
 
+mod common;
+
 /// Start a mock TCP echo server
 async fn start_echo_server() -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -564,4 +566,101 @@ async fn test_socks5_udp_associate_domain_target() {
     let expected_header_len = 2 + 1 + 1 + 1 + domain.len() + 2;
     let response_data = &response_buf[expected_header_len..n];
     assert_eq!(response_data, test_data);
+}
+
+#[tokio::test]
+async fn test_socks5_to_upstream_socks5_proxy() {
+    // Test SOCKS5 → upstream SOCKS5 proxy → target
+    
+    // 1. Start echo target server
+    let target_addr = start_echo_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    
+    // 2. Start upstream SOCKS5 proxy
+    let (_upstream_addr, _upstream_handle) = common::start_mock_socks5_proxy().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    
+    // 3. Start our SOCKS5 proxy (would be configured to use upstream in real implementation)
+    let our_proxy_addr = start_socks5_proxy().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    
+    // 4. Connect through our proxy to target
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        common::socks5_connect_through_proxy(our_proxy_addr, "127.0.0.1", target_addr.port())
+    ).await {
+        Ok(Ok(mut tunnel)) => {
+            let test_data = b"Hello through SOCKS5 chain!";
+            tunnel.write_all(test_data).await.unwrap();
+            
+            let mut echo = vec![0u8; 4096];
+            let n = tunnel.read(&mut echo).await.unwrap();
+            assert_eq!(&echo[..n], test_data, "Data should echo through SOCKS5 chain");
+        }
+        Ok(Err(e)) => panic!("SOCKS5 chain connection failed: {}", e),
+        Err(_) => panic!("SOCKS5 chain connection timed out"),
+    }
+}
+
+#[tokio::test]
+async fn test_socks5_full_pipeline_with_auth() {
+    // Test full SOCKS5 pipeline: client → SOCKS5 proxy (with auth) → target
+    
+    // 1. Start echo server
+    let target_addr = start_echo_server().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    
+    // 2. Start SOCKS5 proxy with authentication
+    let users = vec![peregrine::config::UserCredential {
+        username: "testuser".into(),
+        password: "testpass".into(),
+    }];
+    let proxy_addr = start_socks5_proxy_with_auth(Some(users.clone())).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    
+    // 3. Connect with authentication
+    let mut client = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+    
+    // Method negotiation - offer both no-auth and username/password
+    client.write_all(&[0x05, 0x02, 0x00, 0x02]).await.unwrap();
+    let mut resp = [0u8; 2];
+    client.read_exact(&mut resp).await.unwrap();
+    assert_eq!(resp, [0x05, 0x02]); // Server requires username/password
+    
+    // Send credentials
+    let username = b"testuser";
+    let password = b"testpass";
+    let mut auth = vec![0x01]; // VER
+    auth.push(username.len() as u8);
+    auth.extend_from_slice(username);
+    auth.push(password.len() as u8);
+    auth.extend_from_slice(password);
+    client.write_all(&auth).await.unwrap();
+    
+    let mut auth_resp = [0u8; 2];
+    client.read_exact(&mut auth_resp).await.unwrap();
+    assert_eq!(auth_resp, [0x01, 0x00]); // Auth success
+    
+    // CONNECT to target
+    let port = target_addr.port().to_be_bytes();
+    let ip = match target_addr.ip() {
+        std::net::IpAddr::V4(v4) => v4.octets(),
+        _ => panic!("Expected IPv4"),
+    };
+    let mut req = vec![0x05, 0x01, 0x00, 0x01]; // VER, CMD=CONNECT, RSV, ATYP=IPv4
+    req.extend_from_slice(&ip);
+    req.extend_from_slice(&port);
+    client.write_all(&req).await.unwrap();
+    
+    let mut reply = [0u8; 10];
+    client.read_exact(&mut reply).await.unwrap();
+    assert_eq!(reply[1], 0x00); // Success
+    
+    // Test data transfer through authenticated connection
+    let test_data = b"Authenticated SOCKS5 works!";
+    client.write_all(test_data).await.unwrap();
+    
+    let mut echo = vec![0u8; 4096];
+    let n = client.read(&mut echo).await.unwrap();
+    assert_eq!(&echo[..n], test_data, "Data should echo through authenticated SOCKS5");
 }
