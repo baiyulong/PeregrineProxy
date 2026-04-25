@@ -156,3 +156,70 @@ async fn test_upstream_router_http_proxy() {
     let n = stream.read(&mut buf).await.unwrap();
     assert_eq!(&buf[..n], b"Router via proxy!");
 }
+
+/// Start a SOCKS5 proxy (reusing our own implementation)
+async fn start_socks5_proxy() -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        loop {
+            let (stream, peer_addr) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                peregrine::protocol::socks5::handle_socks5(stream, peer_addr).await;
+            });
+        }
+    });
+    
+    addr
+}
+
+#[tokio::test]
+async fn test_socks5_proxy_connector() {
+    use peregrine::upstream::socks5_proxy::Socks5ProxyConnector;
+    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let connector = Socks5ProxyConnector {
+        proxy_addr: proxy_addr.to_string(),
+        auth: None,
+    };
+    
+    let mut stream = connector.connect(&ConnectTarget::Address(
+        "127.0.0.1".into(), echo_addr.port()
+    )).await.unwrap();
+    
+    use tokio::io::{AsyncWriteExt as _, AsyncReadExt as _};
+    stream.write_all(b"Hello via SOCKS5 proxy!").await.unwrap();
+    
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"Hello via SOCKS5 proxy!");
+}
+
+#[tokio::test]
+async fn test_upstream_router_socks5() {
+    use peregrine::upstream::UpstreamRouter;
+    use peregrine::upstream::{ConnectTarget, UpstreamConnector};
+    use peregrine::config::UpstreamConfig;
+    
+    let echo_addr = start_echo_server().await;
+    let proxy_addr = start_socks5_proxy().await;
+    
+    let router = UpstreamRouter::from_config(&UpstreamConfig::Socks5 {
+        addr: proxy_addr.to_string(),
+        auth: None,
+    });
+    let mut stream = router.connector().connect(&ConnectTarget::Address(
+        "127.0.0.1".into(), echo_addr.port()
+    )).await.unwrap();
+    
+    use tokio::io::{AsyncWriteExt as _, AsyncReadExt as _};
+    stream.write_all(b"Router via SOCKS5!").await.unwrap();
+    
+    let mut buf = vec![0u8; 4096];
+    let n = stream.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"Router via SOCKS5!");
+}

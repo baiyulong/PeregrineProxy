@@ -1,5 +1,6 @@
 pub mod direct;
 pub mod http_proxy;
+pub mod socks5_proxy;
 
 use async_trait::async_trait;
 use tokio::net::TcpStream;
@@ -32,11 +33,10 @@ impl UpstreamRouter {
                 proxy_addr: addr.clone(),
                 auth: auth.clone(),
             }),
-            UpstreamConfig::Socks5 { addr: _, auth: _ } => {
-                // Will be implemented in Task 15
-                tracing::warn!("SOCKS5 upstream not yet implemented, falling back to direct");
-                Arc::new(direct::DirectConnector)
-            }
+            UpstreamConfig::Socks5 { addr, auth } => Arc::new(socks5_proxy::Socks5ProxyConnector {
+                proxy_addr: addr.clone(),
+                auth: auth.clone(),
+            }),
             UpstreamConfig::Chain { chain: _ } => {
                 // Will be implemented in Task 16
                 tracing::warn!("Chain upstream not yet implemented, falling back to direct");
